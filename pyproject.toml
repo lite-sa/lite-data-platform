@@ -1,0 +1,27 @@
+[project]
+name = "lite-data-platform"
+version = "0.1.0"
+description = "Lite data platform monorepo — ingestion, transformation, and analytics apps."
+requires-python = ">=3.14"
+dependencies = [
+    "app-etl",
+]
+
+# uv workspace: every app under apps/ is a workspace member sharing one venv
+# and one lockfile. Adding an app = new dir under apps/ + entry in [project.dependencies]
+# + [tool.uv.sources].
+[tool.uv.workspace]
+members = ["apps/*"]
+
+[tool.uv.sources]
+app-etl = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+# The root is a workspace aggregator, not a distributable package.
+[tool.uv]
+package = false
