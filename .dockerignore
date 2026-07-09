@@ -1,0 +1,17 @@
+.git/
+.venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+docs/
+*.md
+.env
+*.env.local
+data/
+*.parquet
+*.duckdb
+.idea/
+.vscode/
+.DS_Store
