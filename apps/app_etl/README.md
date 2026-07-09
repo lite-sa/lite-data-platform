@@ -1,129 +1,124 @@
-# app_etl — ingestion jobs
+# app_etl — ingestion pipelines
 
-Bespoke, per-table jobs moving data from the Postgres read replica to BigQuery
-via GCS. One file per job, one schedule per job, shared *dumb* helpers in
-`utils/` (a helper takes arguments and does IO; it never decides what a job does).
+Bespoke, per-table **dlt** pipelines moving data from the Postgres read
+replica to BigQuery via GCS (filesystem staging → free batch load jobs).
+One file per pipeline, one schedule per job. dlt supplies the plumbing
+(extraction, staging, loading, state, schema DDL); each pipeline file states
+only what is specific to its table: the column allowlist, the incremental
+cursor, partition/cluster keys, and the write strategy.
 
-## Jobs
+## Pipelines
 
-| Job | Mode | Source | Target | Cadence (planned) |
+| Pipeline | Mode | Source | Target | Cadence (planned) |
 |---|---|---|---|---|
-| `ingestion/ingest_payments.py` | Incremental (watermark) | `payments` (append-only) | `raw_litecore.payments` (WRITE_APPEND) | hourly |
-| `ingestion/ingest_merchants.py` | Full snapshot | `merchants` (mutable config table) | `raw_litecore.merchants$YYYYMMDD` (partition TRUNCATE) | daily |
+| `ingestion/payments.py` | Incremental (cursor on `created_at`) | `payments` (append-only) | `raw_litecore.payments` (append) | hourly |
+| `ingestion/merchants.py` | Daily snapshot | `merchants` (mutable config table) | `raw_litecore.merchants` (snapshot-date partitions) | daily |
 
 Next tables (businesses, payment_operations, …) follow one of these two shapes —
-copy the job file, don't parameterize it.
+copy the pipeline file, don't parameterize it.
 
-## The watermark design (incremental jobs)
+## The watermark design (incremental pipelines)
+
+dlt's incremental cursor tracks the max `created_at` seen and filters each
+extraction — but it does **not** know about the Postgres commit-order race,
+which is ours to close:
 
 Append-only does **not** make `created_at` watermarking safe by itself: in
 Postgres `now()` is the transaction *start* time, so a row with
 `created_at = 10:00` can *commit* at 10:03, after a 10:02 run has already
 advanced the watermark past it — and it would be skipped silently, forever.
 
-One guard closes that race — the window's upper bound trails wall clock:
+One guard closes that race — the extraction query's upper bound trails wall
+clock (via the `sql_database` source's query adapter):
 
 ```
-window = (watermark,  now() - SAFETY_LAG]
-                      └ leaves room for in-flight
-                        transactions to commit
+WHERE created_at > :last_value
+  AND created_at <= now() - SAFETY_LAG   -- leaves room for in-flight
+                                         -- transactions to commit
 ```
+
+Because no extracted row ever exceeds the capped bound, dlt's stored cursor
+can never advance past it, and a late-committing row inside the lag is picked
+up by the next run.
 
 - **Correctness assumption (stated, ours to keep true):** no write transaction
   on the source outlives `SAFETY_LAG` (10 min). At hourly cadence the lag costs
   nothing in freshness. If long-running writers ever appear upstream, raise the
-  lag — or revisit the overlap+dedup design this replaced.
-- **No duplicates produced, no dedup contract downstream.** BQ load jobs are
-  atomic, so a failed run retried is clean. The one residual duplicate window —
-  the job crashes *after* the load succeeds but *before* the watermark
-  advances, so the rerun re-loads the same window — is accepted in v1. When dbt
-  staging arrives it closes for free with a one-line `QUALIFY ROW_NUMBER()`;
-  primary keys always land in raw so that stays possible.
-- The watermark is the window upper bound the job **computed** — not
-  `MAX(created_at)` fished out of the extracted data. An empty window still
-  advances it; a no-op run is not an error.
+  lag — or switch to dlt's `lag` + merge disposition (the overlap+dedup design
+  we rejected as premature; it also trades free batch loads for MERGE compute).
+- **No duplicates produced, no dedup contract downstream.** Append disposition
+  + batch loads. The one residual duplicate window — a crash after the data
+  load lands but before dlt's state load commits, so the rerun re-extracts the
+  same window — is accepted in v1. When dbt staging arrives it closes for free
+  with a one-line `QUALIFY ROW_NUMBER()`; primary keys always land in raw so
+  that stays possible.
+- The stored watermark is `MAX(created_at)` of extracted rows, so an empty
+  run does not advance it. Harmless: the capped bound guarantees every
+  not-yet-seen row is still ahead of the cursor.
 
-How the watermark is stored, advanced, and rewound is entirely the run log's
-business — next section.
+## Run state
 
-## Run state (`ops.ingestion_runs`)
+Entirely dlt's: pipeline state (including the incremental cursor) is stored
+in the destination and restored each run — `_dlt_pipeline_state`, plus
+`_dlt_loads` (per-load history) and `_dlt_version` (every schema version
+applied). State advances only as part of a successful load; a failed or
+crashed run advances nothing — rerun and the same window extracts again.
 
-State is an **append-only run log** in BigQuery — one INSERT per run, no
-UPDATE/MERGE ever:
+The scaffold's `ops.ingestion_runs` run log and `utils/state.py`
+(`get_watermark` / `commit_watermark`) are superseded by this and dropped.
+If we later miss a queryable run-observability table beyond `_dlt_loads`,
+we add one back as observability only — never as the correctness mechanism.
 
-```sql
-CREATE TABLE ops.ingestion_runs (
-  pipeline_id  STRING    NOT NULL,   -- "payments", "merchants", ...
-  run_at       TIMESTAMP NOT NULL,
-  watermark    TIMESTAMP,            -- window upper bound; NULL for snapshots
-  status       STRING    NOT NULL,   -- COMPLETED (only value written today)
-  rows_loaded  INT64,
-  gcs_uri      STRING                -- ties the run to its landed file
-);
-```
-
-- Two functions in `utils/state.py`: `get_watermark` (latest `COMPLETED` row
-  per pipeline, else `initial_default`) and `commit_watermark` (insert the
-  `COMPLETED` row). The commit **is** the watermark advance — one write, only
-  after the load succeeds.
-- Only successful runs are written. A failed or crashed run writes nothing —
-  absence is the signal; Cloud Run logs hold the autopsy. Never read `status`
-  as proof of health.
-- First run: no `COMPLETED` row → the job starts from `initial_default`
-  (launch date), through the same windowed code path — pre-launch that window
-  IS the full table, so there is no separate full-load branch to accidentally
-  trigger.
-- Replay/backfill: INSERT a correction row with an older watermark — the
-  rewind stays visible in history instead of being overwritten.
-- Snapshot jobs (merchants) record runs too, with `watermark NULL` —
-  observability only.
-- Until an orchestrator exists, this table is the run observability layer:
-  durations, failure streaks, volume trends, and `rows_loaded`/`gcs_uri` for
-  recon and debugging.
+- First run: no stored cursor → extraction starts from the resource's
+  `initial_value` (launch date), through the same windowed code path —
+  pre-launch that window IS the full table, so there is no separate
+  full-load branch to accidentally trigger.
+- Replay/backfill: an explicit dlt backfill run over a fixed
+  `initial_value`/`end_value` range — deliberate, and append-safe only if
+  the target window was empty; otherwise dedup downstream first.
 
 ## Snapshot design (config tables)
 
-Full extract each run, loaded into **today's date partition** of the target:
+Full extract each run, landing as **one row-set per snapshot date** in a
+table partitioned on `snapshot_date` — point-in-time joins ("what did this
+merchant's config look like when the payment happened") are a filter on the
+snapshot date.
 
-```
-destination: raw_litecore.merchants$20260706    # partition decorator
-disposition: WRITE_TRUNCATE
-```
-
-`WRITE_TRUNCATE` is a BigQuery load-job *write disposition* — the setting that
-says what to do with data already in the destination. `WRITE_APPEND` (what
-payments uses) adds the loaded rows to whatever is there; `WRITE_TRUNCATE`
-atomically **replaces** the destination's contents with the loaded file.
-Pointed at a partition decorator (`table$YYYYMMDD`) rather than the bare
-table, it replaces *only that day's partition* and leaves every other day
-untouched. The combination gives snapshots both properties we want:
-
-- **Idempotent per day** — a rerun replaces today's snapshot instead of
-  duplicating it (rerunning an APPEND snapshot would double every merchant).
-- **History for free** — one partition per day, so point-in-time joins
-  ("what did this merchant's config look like when the payment happened")
-  are a filter on the snapshot date.
+Reruns must be idempotent per day (an append rerun would double every
+merchant). The dlt-idiomatic way is merge/delete-insert keyed on
+`snapshot_date` — MERGE costs query compute, but config tables are small,
+so this is pennies; the exact strategy is settled in step 2.
 
 ## Landing layout (GCS)
 
-```
-gs://{bucket}/raw/litecore/{table}/ingest_date=YYYY-MM-DD/{run_ts}.parquet
-```
-
-One immutable file per run. Reruns write a new `run_ts`; nothing is overwritten.
+Staging files are written by dlt under its layout in the raw bucket; one
+immutable file set per load, nothing overwritten. (The scaffold's bespoke
+`raw/litecore/{table}/ingest_date=...` layout is superseded; we configure
+dlt's filesystem layout rather than hand-rolling paths.)
 
 ## Memory
 
-Every extract streams through a server-side cursor in 50k-row chunks and is
-written as one Parquet row group per chunk (`utils/pg.py`, `utils/gcs.py`).
-Footprint is one chunk regardless of table size.
+Extraction streams through dlt's `sql_database` source in arrow-batch chunks;
+footprint is one chunk regardless of table size.
 
 ## Configuration
 
 `config.py` reads env vars: `GCP_PROJECT`, `GCS_BUCKET`, `PG_DSN` (required),
 `BQ_DATASET_RAW` (default `raw_litecore`), `BQ_DATASET_OPS` (default `ops`).
+dlt's own credentials/config are fed from the same env (env vars are dlt's
+native config provider) — no `secrets.toml` files in the repo.
+
+## Schema
+
+Column allowlists, DDL ownership, evolution, and the changelog are in
+`docs/schema-management.md`. Short version: every resource declares an
+explicit column list (PII deny-by-default — `payments` excludes the
+customer/device/3DS JSONB blobs), dlt owns raw DDL and additive evolution,
+and the exported schema YAML committed under `schemas/` is the changelog.
 
 ## Status
 
-Scaffold only — module contracts are in the docstrings; implementations land in
-the next step (`raise NotImplementedError("step 2")` marks each one).
+Scaffold predates the dlt decision: `utils/` (pg/gcs/bq/state) and the job
+stubs encode the hand-rolled design this README used to describe. Step 2
+replaces them with the dlt pipelines described here; the stubs'
+`NotImplementedError("step 2")` markers still map to that milestone.

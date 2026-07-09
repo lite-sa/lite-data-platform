@@ -7,28 +7,31 @@ cheaply and correctly in order to enable future analytics and usecases.
 
 ## Principles
 
-- **Bespoke over generic.** One explicit job per table (`ingest_payments`,
-  `ingest_merchants`), one explicit schedule per job. No factory patterns, no
-  config-driven job frameworks. We pay the duplication cost to keep every job
-  readable and independently changeable; we'll generalize only when the
+- **Bespoke over generic — on a standard framework.** Ingestion uses **dlt**
+  (data load tool), the de-facto standard Python EL framework, but as one
+  explicit pipeline per table (`payments`, `merchants`), one explicit schedule
+  per job. dlt replaces plumbing we'd otherwise hand-roll — extraction,
+  GCS staging, BQ loading, watermark state, schema DDL — not the per-table
+  explicitness. No config-driven job factories; we'll generalize only when
   duplication actually hurts.
 - **Apps, one per domain.** Code lives in `apps/app_*` (uv workspace members
   sharing one lockfile): `app_etl` now; `app_aml`, `app_analytics`, … later.
-- **Cheapest thing that is correct.** Parquet on GCS + free BigQuery batch load
-  jobs; Cloud Scheduler over Composer; no streaming until something needs it.
-
+- **Cheapest thing that is correct.** dlt with filesystem staging = Parquet on
+  GCS + free BigQuery batch load jobs; Cloud Scheduler over Composer; no
+  streaming until something needs it.
 
 ## Layout
 
 ```
 lite-data-platform/
   pyproject.toml            # uv workspace root
+  docs/                     # cross-cutting design docs (schema management, provisioning)
   apps/
-    app_etl/                # Postgres → GCS (Parquet) → BigQuery ingestion jobs
+    app_etl/                # dlt pipelines: Postgres → GCS (Parquet) → BigQuery
       app_etl/
         config.py           # env-driven settings (project, bucket, datasets, DSN)
-        utils/              # plain shared helpers: pg, gcs, bq, state
-        ingestion/          # bespoke jobs: ingest_payments, ingest_merchants, ...
+        ingestion/          # bespoke pipelines: payments, merchants, ...
+        schemas/            # dlt exported schema YAML, committed (the changelog)
       tests/
 ```
 
@@ -47,19 +50,21 @@ Single dev GCP project for now; staging environments can be added later
 
 | Decision | Choice | Why |
 |---|---|---|
-| Movement | Pure-Python jobs: PG read replica → Parquet on GCS → BQ batch load | Load jobs are free; no CDC infra pre-launch. Revisit CDC (Debezium et al.) when volume/latency demands it. |
-| Incremental capture | `created_at` watermark + safety lag (no overlap, no dedup) | Append-only tables still race on commit order; a trailing window bound closes it with zero duplicates, assuming no source transaction outlives the lag. See `apps/app_etl/README.md`. |
-| Watermark state | `ops.ingestion_runs` — append-only run log in BigQuery, one INSERT per run | The COMPLETED insert is the watermark advance; replay = insert a correction row; doubles as run observability until an orchestrator exists. |
-| Config tables | Daily full snapshot into a date partition (`table$YYYYMMDD`, WRITE_TRUNCATE) | Idempotent reruns + free point-in-time history for as-of joins. |
-| Memory | Server-side cursors, fixed-size chunks, streamed Parquet row groups | A job's footprint is one chunk regardless of table size. ~10 lines, not a framework. |
+| Movement | dlt pipelines: PG read replica (`sql_database` source) → Parquet staged on GCS → BQ batch load | Standard framework, and still the free-load path (staging + batch load jobs cost nothing); no CDC infra pre-launch. Revisit CDC (Debezium et al.) when volume/latency demands it. |
+| Incremental capture | dlt incremental cursor on `created_at`, extraction query capped at `now() − safety lag` | dlt tracks the watermark, but not the Postgres commit-order race (`now()` is transaction *start* time); the capped upper bound closes it. Zero duplicates, no dedup contract downstream. See `apps/app_etl/README.md`. |
+| Watermark state | dlt pipeline state, stored in the destination (`_dlt_pipeline_state`; load history in `_dlt_loads`) | Advances only with a successful load; survives redeploys; nothing hand-rolled. The earlier `ops.ingestion_runs` run log is dropped for v1 — add observability back only if we miss it. |
+| Schema | Column allowlist on every resource (PII deny-by-default); dlt owns raw DDL + evolution; dbt contracts once marts have consumers | One source of truth, no drift to police. See `docs/schema-management.md`. |
+| Config tables | Daily snapshot rows keyed by snapshot date into a date-partitioned table, idempotent per day | Point-in-time history for as-of joins; exact dlt write strategy (merge on small config tables is cheap) settled in step 2. |
+| Memory | Chunked extraction via dlt's `sql_database` backends (arrow batches) | A job's footprint is one chunk regardless of table size. |
 | Orchestration | Cloud Scheduler → Cloud Run jobs | Composer is ~$400/mo idle; our one known dependency (transforms gate on today's merchant snapshot) is a data-availability check in code. Revisit when the dependency graph stops fitting in a head. |
 | Transformation | dbt on BigQuery (planned, `app_aml` milestone) | AML v1 is aggregations/rules — dbt fits; Spark is overkill at our volume. |
 
 ## Roadmap
 
-1. **Ingestion scaffold** *(this change)* — repo structure, contracts, docs.
-2. **Ingestion jobs** — implement `utils/` + `ingest_payments`, `ingest_merchants`;
-   verified locally against a seeded Postgres.
+1. **Ingestion scaffold** *(done)* — repo structure, contracts, docs.
+2. **Ingestion pipelines** — dlt pipelines for `payments` (incremental) and
+   `merchants` (daily snapshot); replaces the scaffold's hand-rolled
+   `utils/` + watermark stubs; verified locally against a seeded Postgres.
 3. **Packaging & deploy** — Dockerfile + Cloud Build → Cloud Run jobs.
 4. **Orchestration** — Cloud Scheduler schedules in code, data-availability gates.
 5. **Notebooks** — BigQuery notebooks with `app_etl` utils importable; user branches.
