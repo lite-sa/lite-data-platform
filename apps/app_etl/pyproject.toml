@@ -8,6 +8,7 @@ dependencies = [
     "pyarrow>=21",
     "google-cloud-storage>=3",
     "google-cloud-bigquery>=3.30",
+    "dlt[bigquery,gs,parquet,sql-database]>=1.28.1",
 ]
 
 [build-system]
