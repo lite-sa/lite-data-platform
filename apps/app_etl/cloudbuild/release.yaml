@@ -1,0 +1,44 @@
+# Release: build the sample-ingest image, push it to Artifact Registry, then
+# point the existing `sample-ingest` Cloud Run Job at the new tag. Runs on
+# merge to main. Never deploys :latest — the image is tagged $SHORT_SHA so
+# every deploy is traceable to a commit and rollback is just a re-deploy of
+# an older tag.
+substitutions:
+  _REGION: ""
+  _AR_REPO: ""
+  _PROJECT_ID: ""
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - apps/app_etl/Dockerfile
+      - -t
+      - $_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sample-ingest:$SHORT_SHA
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - $_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sample-ingest:$SHORT_SHA
+
+  - id: deploy
+    name: gcr.io/google-cloud-sdk/slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - sample-ingest
+      - --image=$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sample-ingest:$SHORT_SHA
+      - --region=$_REGION
+      - --project=$_PROJECT_ID
+
+images:
+  - $_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sample-ingest:$SHORT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY

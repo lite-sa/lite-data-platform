@@ -1,0 +1,35 @@
+# PR validation: lint + test the workspace. No image is built or pushed here
+# — release.yaml (this directory) owns that, on merge to main.
+#
+# _REGION / _AR_REPO / _PROJECT_ID are passed by the PR trigger for parity
+# with release.yaml's substitutions; this build doesn't touch Artifact
+# Registry or Cloud Run, so it only surfaces them for traceability in the log.
+substitutions:
+  _REGION: ""
+  _AR_REPO: ""
+  _PROJECT_ID: ""
+
+steps:
+  - id: show-config
+    name: gcr.io/cloud-builders/docker
+    entrypoint: echo
+    args:
+      - "PR validation build — target project=$_PROJECT_ID region=$_REGION ar_repo=$_AR_REPO (unused here; see release.yaml)"
+
+  - id: sync
+    name: ghcr.io/astral-sh/uv:0.11.25-python3.14-bookworm-slim
+    entrypoint: uv
+    args: ["sync", "--locked"]
+
+  - id: lint
+    name: ghcr.io/astral-sh/uv:0.11.25-python3.14-bookworm-slim
+    entrypoint: uv
+    args: ["run", "ruff", "check", "."]
+
+  - id: test
+    name: ghcr.io/astral-sh/uv:0.11.25-python3.14-bookworm-slim
+    entrypoint: uv
+    args: ["run", "pytest"]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
