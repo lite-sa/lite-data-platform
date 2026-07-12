@@ -21,6 +21,7 @@ def run() -> None:
     settings = Settings.from_env()
 
     table = bq_resource(
+        # TODO: add the column allowlist
         sql_table(
             credentials=settings.pg_dsn,
             schema="payment_v2",

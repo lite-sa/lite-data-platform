@@ -17,7 +17,9 @@ def run() -> None:
     settings = Settings.from_env()
 
     table = bq_resource(
+        # TODO: add the column allowlist
         sql_table(credentials=settings.pg_dsn, schema="user", table="merchants").apply_hints(
+            # TODO: add snapshot_date  partitions for point-in-time joins
             write_disposition="replace"
         )
     )

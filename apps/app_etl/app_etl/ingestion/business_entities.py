@@ -18,9 +18,13 @@ def run() -> None:
     settings = Settings.from_env()
 
     table = bq_resource(
+        # TODO: add the column allowlist
         sql_table(
             credentials=settings.pg_dsn, schema="business_management", table="business_entities"
-        ).apply_hints(write_disposition="replace")
+        ).apply_hints(
+            # TODO: add snapshot_date  partitions for point-in-time joins
+            write_disposition="replace"
+        )
     )
 
     pipeline = bq_pipeline("business_entities", settings)
