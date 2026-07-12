@@ -18,6 +18,8 @@ app-etl = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "bigframes>=2.45.0",
+    "jupyterlab>=4.6.1",
     "pytest>=8",
     "ruff>=0.5",
 ]
@@ -25,3 +27,7 @@ dev = [
 # The root is a workspace aggregator, not a distributable package.
 [tool.uv]
 package = false
+
+# Exploratory notebooks are scratch work, not CI-gated code.
+[tool.ruff]
+extend-exclude = ["notebooks"]
