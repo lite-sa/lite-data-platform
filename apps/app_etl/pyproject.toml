@@ -9,6 +9,7 @@ dependencies = [
     "google-cloud-storage>=3",
     "google-cloud-bigquery>=3.30",
     "dlt[bigquery,gs,parquet,sql-database]>=1.28.1",
+    "python-dotenv>=1.1",
 ]
 
 [build-system]

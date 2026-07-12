@@ -15,29 +15,28 @@ connection exists and step 2 of the roadmap starts for real.
 ## Run
 
 ```bash
+cp .env.example .env          # at the repo root; fill in — .env is gitignored
 cd apps/app_etl/scripts/local_source_test
-cp .env.example .env          # fill in / adjust if needed — .env is gitignored
 docker compose up -d          # starts Postgres, applies seed.sql automatically
-
-cd ../../..                   # back to apps/app_etl
+cd -                          # back to the repo root
 gcloud auth application-default login   # once per workstation, needs access to lite-data-dev
 
-uv run --project apps/app_etl python scripts/local_source_test/pipeline.py
+uv run python apps/app_etl/scripts/local_source_test/pipeline.py
 ```
 
-`pipeline.py` loads `.env` from this folder itself (not cwd-dependent), and
-never overrides a variable that's already set in your shell — so exporting
-`GCP_PROJECT`/`GCS_BUCKET`/`PG_DSN` still works exactly as before if you
-prefer that over the file. `PG_DSN` defaults to the local container
-(`postgresql+psycopg://dlt_test:dlt_test@localhost:5432/litecore_test`) if
-left unset either way. The `+psycopg` part matters: it tells SQLAlchemy to
-use the `psycopg[binary]` (v3) driver already in this workspace's
-dependencies, instead of `psycopg2`, which isn't installed.
+`pipeline.py` now just runs the real `app_etl/ingestion/` pipelines in
+sequence; config comes from the repo-root `.env` (loaded by
+`Settings.from_env()` via python-dotenv — shell-exported variables always
+win). Keep `BQ_DATASET_RAW=raw_test` set so nothing lands in
+`raw_litecore`. The `+psycopg` marker in `PG_DSN` matters: it tells
+SQLAlchemy to use the `psycopg[binary]` (v3) driver already in this
+workspace's dependencies, instead of `psycopg2`, which isn't installed.
 
 ## Verify
 
 - BigQuery console, `lite-data-dev` project: dataset `raw_test` should have 4 tables with a few rows each.
-- `gs://lite-data-dev-raw/pg-test/` should have the staged parquet files.
+- `gs://lite-data-dev-raw/raw_test/` should have the staged parquet files
+  (the staging prefix mirrors `BQ_DATASET_RAW`).
 
 ## Teardown
 
@@ -46,8 +45,9 @@ cd apps/app_etl/scripts/local_source_test
 docker compose down                                    # wipes local Postgres, no volume to clean up
 
 bq rm -r -f -d lite-data-dev:raw_test                   # drop the test dataset
-gsutil -m rm -r gs://lite-data-dev-raw/pg-test           # delete the staged files
-rm -rf ~/.dlt/pipelines/pg_source_smoke_test*
+gsutil -m rm -r gs://lite-data-dev-raw/raw_test          # delete the staged files
+rm -rf ~/.dlt/pipelines/{payments,payment_operations,merchants,business_entities}
+rm -rf ~/.dlt/pipelines/pg_source_smoke_test*            # runs from before the port
 ```
 
 ## Re-create 
@@ -77,10 +77,9 @@ this test, only worked around:
    bastion, platform team's call. This is still an open question in
    `docs/provisioning.md`.
 4. DSN shape once granted: `postgresql+psycopg://<ro_user>:<password>@<private_ip_or_host>:5432/<db_name>`
-   — swap into `PG_DSN` (or, once there are 3, into per-pipeline env vars)
-   and this same `sql_table()` call pattern in `pipeline.py` is what the real
-   `ingestion/ingest_payments.py` etc. will use, just pointed at the real
-   host instead of `localhost`.
+   — swap into `PG_DSN` (or, once there are 3, into per-pipeline env vars);
+   the real `app_etl/ingestion/` pipelines pick it up unchanged, just
+   pointed at the real host instead of `localhost`.
 
 ## Known gaps in this stand-in (don't over-trust it)
 

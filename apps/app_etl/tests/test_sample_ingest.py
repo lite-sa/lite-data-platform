@@ -1,7 +1,8 @@
 """sample-ingest smoke test: settings load and the run logs successfully."""
 
 
-def test_main_logs_settings(monkeypatch, caplog):
+def test_main_logs_settings(tmp_path, monkeypatch, caplog):
+    monkeypatch.chdir(tmp_path)  # keep any repo-root .env out of the test
     monkeypatch.setenv("GCP_PROJECT", "lite-data-dev")
     monkeypatch.setenv("GCS_BUCKET", "lite-data-raw-dev")
     monkeypatch.setenv("PG_DSN", "postgresql://u:p@localhost:5432/litecore")

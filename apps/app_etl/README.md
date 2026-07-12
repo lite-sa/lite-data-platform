@@ -11,11 +11,14 @@ cursor, partition/cluster keys, and the write strategy.
 
 | Pipeline | Mode | Source | Target | Cadence (planned) |
 |---|---|---|---|---|
-| `ingestion/payments.py` | Incremental (cursor on `created_at`) | `payments` (append-only) | `raw_litecore.payments` (append) | hourly |
-| `ingestion/merchants.py` | Daily snapshot | `merchants` (mutable config table) | `raw_litecore.merchants` (snapshot-date partitions) | daily |
+| `ingestion/payments.py` | Incremental (cursor on `created_at`) | `payment_v2.payments` (append-only) | `raw_litecore.payments` (append) | hourly |
+| `ingestion/payment_operations.py` | Incremental (cursor on `created_at`) | `payment_v2.payment_operations` (append-only) | `raw_litecore.payment_operations` (append) | hourly |
+| `ingestion/merchants.py` | Full replace (interim; snapshot-date partitions are the target design below) | `user.merchants` (mutable config table) | `raw_litecore.merchants` | daily |
+| `ingestion/business_entities.py` | Full replace (interim, as above) | `business_management.business_entities` (mutable config table) | `raw_litecore.business_entities` | daily |
 
-Next tables (businesses, payment_operations, …) follow one of these two shapes —
-copy the pipeline file, don't parameterize it.
+New tables follow one of these two shapes — copy the pipeline file, don't
+parameterize it. Shared plumbing (safety-lag helpers, BigQuery adapter
+wrapper, pipeline factory) lives in `utils/dlt_helpers.py`.
 
 ## The watermark design (incremental pipelines)
 
@@ -87,7 +90,12 @@ snapshot date.
 Reruns must be idempotent per day (an append rerun would double every
 merchant). The dlt-idiomatic way is merge/delete-insert keyed on
 `snapshot_date` — MERGE costs query compute, but config tables are small,
-so this is pennies; the exact strategy is settled in step 2.
+so this is pennies.
+
+**Interim:** `merchants.py` / `business_entities.py` currently use plain
+`replace` (full overwrite, no history) — the snapshot-date partition design
+above is the intended end state and requires a new table when it lands
+(partitioning is immutable at CREATE).
 
 ## Landing layout (GCS)
 
@@ -105,8 +113,11 @@ footprint is one chunk regardless of table size.
 
 `config.py` reads env vars: `GCP_PROJECT`, `GCS_BUCKET`, `PG_DSN` (required),
 `BQ_DATASET_RAW` (default `raw_litecore`), `BQ_DATASET_OPS` (default `ops`).
-dlt's own credentials/config are fed from the same env (env vars are dlt's
-native config provider) — no `secrets.toml` files in the repo.
+Local dev keeps them in a gitignored `.env` at the repo root (copy
+`.env.example`), loaded via python-dotenv — shell-exported variables always
+win. Cloud Run jobs get the same variables as job env vars. dlt's own
+credentials/config are fed from the same env (env vars are dlt's native
+config provider) — no `secrets.toml` files in the repo.
 
 ## Schema
 
@@ -118,7 +129,11 @@ and the exported schema YAML committed under `schemas/` is the changelog.
 
 ## Status
 
-Scaffold predates the dlt decision: `utils/` (pg/gcs/bq/state) and the job
-stubs encode the hand-rolled design this README used to describe. Step 2
-replaces them with the dlt pipelines described here; the stubs'
-`NotImplementedError("step 2")` markers still map to that milestone.
+Step 2 landed: `ingestion/` holds the four real dlt pipelines and
+`utils/dlt_helpers.py` their shared plumbing, promoted from the
+`scripts/local_source_test/` proof. The source is still the local Docker
+stand-in (real replica connection pending — see that folder's README for
+the connection gap to close), so local runs must keep
+`BQ_DATASET_RAW=raw_test`. The hand-rolled scaffold (`utils/pg|gcs|bq|state`)
+is deleted; leftover copies inside `scripts/local_source_test/` await a
+final cleanup pass.
