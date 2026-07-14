@@ -5,6 +5,7 @@ description = "Lite data platform monorepo — ingestion, transformation, and an
 requires-python = ">=3.14"
 dependencies = [
     "app-etl",
+    "app-etl-dlt",
 ]
 
 # uv workspace: every app under apps/ is a workspace member sharing one venv
@@ -15,12 +16,21 @@ members = ["apps/*"]
 
 [tool.uv.sources]
 app-etl = { workspace = true }
+app-etl-dlt = { workspace = true }
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.5",
 ]
+
+# Every app's tests/ dir has no __init__.py, so pytest's default import mode
+# derives each test module's name from its filename alone. Two apps both
+# named a file tests/test_scaffold.py collide under that scheme (pytest
+# error: "import file mismatch"). importlib mode identifies modules by
+# their file path instead, so same-named test files across apps don't clash.
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 
 # The root is a workspace aggregator, not a distributable package.
 [tool.uv]

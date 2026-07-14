@@ -1,0 +1,24 @@
+[project]
+name = "app-etl-dlt"
+version = "0.1.0"
+description = "dlt-based ingestion jobs: Postgres read replica -> GCS (Parquet staging) -> BigQuery."
+requires-python = ">=3.14"
+# Extras verified against dlt 1.28.0's PyPI metadata: "sql-database" (hyphen,
+# not underscore) for the sql_database source, "gs" for GCS filesystem
+# staging ("filesystem" alone pulls s3fs/botocore, not gcsfs). Deliberately
+# omitting the "postgres" extra — it pulls psycopg2-binary, which would sit
+# alongside the psycopg (v3) driver app_etl already uses; psycopg[binary]
+# below covers the driver instead, via the "postgresql+psycopg://" DSN
+# scheme (SQLAlchemy 2.0's native psycopg3 dialect).
+dependencies = [
+    "dlt[bigquery,gs,sql-database]>=1.4",
+    "sqlalchemy>=2",
+    "psycopg[binary]>=3.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app_etl_dlt"]
