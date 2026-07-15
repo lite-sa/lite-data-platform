@@ -2,7 +2,9 @@
 name = "lite-data-platform"
 version = "0.1.0"
 description = "Lite data platform monorepo — ingestion, transformation, and analytics apps."
-requires-python = ">=3.14"
+# Pinned below 3.14 because dbt-core can't run on 3.14 yet (mashumaro
+# chokes on 3.14's deferred annotations at import). Lift when dbt supports it.
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "app-etl",
 ]
@@ -22,7 +24,13 @@ dev = [
     "jupyterlab>=4.6.1",
     "pytest>=8",
     "ruff>=0.5",
+    "shandy-sqlfmt>=0.30.0",
 ]
+
+# importlib mode keeps same-named test files across apps/* from colliding
+# (tests/ dirs have no __init__.py, so default mode keys modules on filename).
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 
 # The root is a workspace aggregator, not a distributable package.
 [tool.uv]
