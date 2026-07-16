@@ -2,14 +2,17 @@
 name = "app-etl"
 version = "0.1.0"
 description = "Bespoke ingestion jobs: Postgres read replica → GCS (Parquet) → BigQuery."
-requires-python = ">=3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "psycopg[binary]>=3.2",
     "pyarrow>=21",
     "google-cloud-storage>=3",
     "google-cloud-bigquery>=3.30",
     "dlt[bigquery,gs,parquet,sql-database]>=1.28.1",
+    "sqlalchemy>=2",  # imported directly in utils/dlt_helpers.py, not just via dlt
+    "cloud-sql-python-connector[pg8000]>=1.18",
     "python-dotenv>=1.1",
+    "dbt-bigquery>=1.11,<2",
 ]
 
 [build-system]
