@@ -104,6 +104,12 @@ def pg_credentials(settings: Settings, db: str) -> str | sa.engine.Engine:
     """
     if settings.pg_host:
         return settings.pg_dsn(db)
+    if not settings.pg_instance:
+        raise ValueError(
+            "no source connection configured: ingestion needs PG_HOST/PG_PORT/"
+            "PG_USER (Auth Proxy) or PG_INSTANCE_CONNECTION_NAME + PG_IAM_USER "
+            "(Cloud Run) — only transform/export jobs run without one"
+        )
 
     connector = Connector()
 
@@ -133,6 +139,8 @@ def bq_pipeline(pipeline_name: str, settings: Settings) -> dlt.Pipeline:
     name, so local test runs (BQ_DATASET_RAW=raw_test) can never collide
     with the real raw_litecore landing area.
     """
+    if not settings.gcs_bucket:
+        raise ValueError("GCS_BUCKET is required for ingestion staging")
     return dlt.pipeline(
         pipeline_name=pipeline_name,
         # BigQuery defaults to the "US" multi-region, which the org policy
