@@ -1,8 +1,10 @@
 # Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
-# database — PARKED, see below) -> dbt build -> AML alerts export. One
-# Cloud Scheduler trigger executes this workflow daily (~06:45 Asia/Riyadh,
-# see docs/aml-alert-design.md for the timing argument) instead of
-# staggered per-job schedules guessing each other's runtimes.
+# database — PARKED, see below) -> dbt build. One Cloud Scheduler trigger
+# executes this workflow daily instead of staggered per-job schedules
+# guessing each other's runtimes. The AML alert-export stage this workflow
+# used to run after transform is parked with the alert mart stack (see
+# dbt_project.yml) — recover from git history (DAT-15-aml-p0) if it comes
+# back.
 #
 # Deploy (user-run, tracked in docs/provisioning.md):
 #   gcloud workflows deploy litecore-daily \
@@ -50,10 +52,6 @@ main:
         call: run_job
         args:
           job: transform-aml
-    - export_alerts:
-        call: run_job
-        args:
-          job: export-alerts
 
 # Run one Cloud Run Job and block until its execution finishes; a failed
 # execution raises and fails the workflow. Region is pinned to me-central2
