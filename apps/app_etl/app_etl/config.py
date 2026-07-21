@@ -4,7 +4,9 @@ Local dev keeps a gitignored `.env` at the repo root (see `.env.example`),
 loaded via python-dotenv; variables already set in the shell always win.
 Cloud Run jobs get the same variables as job env vars — no `.env` there.
 
-The Postgres source has exactly two connection modes (set one, never both).
+The Postgres source has exactly two connection modes (set one, never both;
+non-ingestion jobs — transform, alert export — set neither and never touch
+Postgres, so `pg_credentials()` is where "no mode at all" fails, not here).
 Both are per-*instance*: the database name is NOT config — ingestion is one
 pipeline per source database, so each pipeline file states its own database
 and passes it to `pg_dsn()` / `pg_credentials()`.
@@ -28,9 +30,17 @@ from dotenv import find_dotenv, load_dotenv
 
 @dataclass(frozen=True)
 class Settings:
-    gcp_project: str      # GCP project id (single dev project for now)
-    gcs_bucket: str       # raw landing bucket, e.g. lite-data-raw-dev
-    bq_dataset_raw: str   # landing dataset in BQ, e.g. raw_litecore
+    gcp_project: str            # GCP project id (single dev project for now)
+    bq_dataset_raw: str         # landing dataset in BQ, e.g. raw_litecore
+    bq_dataset_aml: str = "aml" # dbt marts dataset the exporter reads
+
+    # Raw landing bucket (dlt staging), e.g. lite-data-dev-raw. Required by
+    # ingestion only — bq_pipeline() enforces it; transform/export jobs
+    # leave it unset.
+    gcs_bucket: str | None = None
+    # Alert egress bucket (docs/aml-alert-design.md contract). Required by
+    # the export job only, which enforces it itself.
+    gcs_bucket_egress: str | None = None
 
     # Mode 1: Cloud SQL Auth Proxy on localhost, e.g. 127.0.0.1:5432
     pg_host: str | None = None
@@ -63,19 +73,22 @@ class Settings:
             )
         pg_host = os.environ.get("PG_HOST")
         pg_instance = os.environ.get("PG_INSTANCE_CONNECTION_NAME")
-        if bool(pg_host) == bool(pg_instance):
+        # Both set is always a contradiction; neither set is fine — jobs
+        # that never touch Postgres (transform, export) run without a mode,
+        # and pg_credentials() fails loudly for the ones that need it.
+        if pg_host and pg_instance:
             raise ValueError(
-                "set exactly one of PG_HOST or PG_INSTANCE_CONNECTION_NAME "
-                f"(PG_HOST {'set' if pg_host else 'unset'}, "
-                f"PG_INSTANCE_CONNECTION_NAME {'set' if pg_instance else 'unset'})"
+                "set at most one of PG_HOST or PG_INSTANCE_CONNECTION_NAME, got both"
             )
         ip_type = os.environ.get("PG_IP_TYPE", "private")
         if ip_type not in ("private", "public"):
             raise ValueError(f"PG_IP_TYPE must be 'private' or 'public', got {ip_type!r}")
         return cls(
             gcp_project=os.environ["GCP_PROJECT"],
-            gcs_bucket=os.environ["GCS_BUCKET"],
             bq_dataset_raw=os.environ.get("BQ_DATASET_RAW", "raw_litecore"),
+            bq_dataset_aml=os.environ.get("BQ_DATASET_AML", "aml"),
+            gcs_bucket=os.environ.get("GCS_BUCKET"),
+            gcs_bucket_egress=os.environ.get("GCS_BUCKET_EGRESS"),
             pg_host=pg_host,
             pg_port=int(os.environ.get("PG_PORT", "5432")),
             pg_user=os.environ["PG_USER"] if pg_host else None,

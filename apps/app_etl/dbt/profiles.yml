@@ -1,0 +1,17 @@
+# Committed on purpose: env-var driven like config.py, no secrets — auth is
+# ADC locally and the job service account on Cloud Run (`method: oauth`
+# covers both). Point dbt at it with --profiles-dir (see README).
+app_etl:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT') }}"
+      # Marts dataset. Local runs against fake sources must override this
+      # to aml_test (see .env.example), same rule as BQ_DATASET_RAW.
+      dataset: "{{ env_var('BQ_DATASET_AML', 'aml') }}"
+      # Data residency: never let this default to US.
+      location: me-central2
+      threads: 4
+      job_execution_timeout_seconds: 600

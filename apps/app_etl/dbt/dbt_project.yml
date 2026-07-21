@@ -1,0 +1,60 @@
+# Light transformation layer over the dlt-landed raw tables. Same
+# philosophy as ingestion: bespoke models on a standard framework, no
+# abstraction until duplication hurts.
+name: app_etl
+version: "0.1.0"
+profile: app_etl
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+vars:
+  # Business-local wall clock for time-of-day rules (Saudi operations;
+  # the whole stack is me-central2). Asia/Riyadh is UTC+3, no DST.
+  aml_local_timezone: "Asia/Riyadh"
+  # AML-008 night window, [start, end) in local hours: 00:00–05:00.
+  aml_night_start_hour: 0
+  aml_night_end_hour: 5
+  # AML-008 (v1-simplified 2026-07-16): alert at >= this many night
+  # AUTHORIZE operations per merchant in one local calendar night. The
+  # original credit-ops formulation (aml_credit_operation_types & the
+  # trailing-window/inactive-status vars) is parked in git history until
+  # the operation_type enum is confirmed.
+  aml_008_txn_count_threshold: 3
+  # Cooldown (per scenario): an unsuppressed alert suppresses re-raising
+  # the same (scenario, target) for this many following run_dates.
+  # Placeholders — confirm with compliance at the stakeholder handshake.
+  aml_008_cooldown_days: 7
+  # AML-014 "Dormant account sudden high activity": no AUTHORIZE ops in
+  # the dormancy baseline (the 90d feature, [D−91, D−2]), then a prev-day
+  # [D−1] burst — op count >= threshold OR summed amount >= threshold.
+  # Amount threshold is MINOR units (50,000 SAR); volume sums minor units
+  # across currencies (99.5% SAR today; currency-mix policy is an open
+  # design-doc TODO). Trailing-window *lengths* are deliberately not vars:
+  # they're baked into feature names (authorize_count_90d, _avg_30d) in
+  # aml_merchant_features.sql — a var could silently disagree with the name.
+  aml_014_txn_count_threshold: 5
+  aml_014_amount_minor_threshold: 5000000
+  aml_014_cooldown_days: 7
+  # AML-015 "Low-activity account sudden high activity" (placeholder name —
+  # confirm against the catalog): 30d daily average (authorize_count_avg_30d)
+  # <= threshold AND a prev-day [D−1] burst — op count >= threshold OR
+  # summed amount >= threshold. Amount threshold is MINOR units
+  # (30,000 SAR); same currency-mix caveat as AML-014.
+  aml_015_avg_30d_threshold: 2
+  aml_015_txn_count_threshold: 10
+  aml_015_amount_minor_threshold: 3000000
+  aml_015_cooldown_days: 7
+
+models:
+  app_etl:
+    staging:
+      +materialized: view
+    # run_date-keyed microbatch evaluation logs (see docs/aml-alert-design.md);
+    # materialization + microbatch configs live in each model's config block
+    # because begin/lookback are semantic, not tuning.
+    intermediate: {}
+    marts: {}
