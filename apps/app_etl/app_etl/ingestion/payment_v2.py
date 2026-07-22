@@ -46,6 +46,7 @@ def run() -> None:
             write_disposition="append",
         ),
         partition="updated_at",
+        cluster="merchant_id",
     )
 
     payment_operations = bq_resource(
@@ -61,6 +62,7 @@ def run() -> None:
             write_disposition="append",
         ),
         partition="updated_at",
+        cluster="payment_id",
     )
 
     pipeline = bq_pipeline(DATABASE, settings)

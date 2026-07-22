@@ -49,7 +49,9 @@ def cap_upper_bound(query: Any, table: sa.Table, incremental: Any, engine: Any) 
     return query.where(table.c[cursor_column] <= cutoff)
 
 
-def bq_resource(resource: Any, partition: str | None = None) -> Any:
+def bq_resource(
+    resource: Any, partition: str | None = None, cluster: str | list[str] | None = None
+) -> Any:
     """Apply `autodetect_schema=True` at the resource level: BigQuery's
     Parquet loader can't take an explicit JSON column type, which hits JSONB
     and ARRAY source columns (both reflected as dlt's abstract `json`).
@@ -60,12 +62,14 @@ def bq_resource(resource: Any, partition: str | None = None) -> Any:
     if a table ever needs dlt's exact types.
 
     `partition` day-partitions the destination table on that column (a
-    timestamp column becomes BigQuery DAY time-partitioning). Partitioning
-    is immutable at CREATE: changing it on an existing table needs a drop +
-    full reload — run the pipeline once with `--refresh` (see
-    `refresh_mode`).
+    timestamp column becomes BigQuery DAY time-partitioning). `cluster`
+    sets BigQuery clustering keys (up to 4 columns). Both are immutable at
+    CREATE: changing either on an existing table needs a drop + full
+    reload — run the pipeline once with `--refresh` (see `refresh_mode`).
     """
-    return bigquery_adapter(resource, autodetect_schema=True, partition=partition)
+    return bigquery_adapter(
+        resource, autodetect_schema=True, partition=partition, cluster=cluster
+    )
 
 
 def refresh_mode(argv: list[str] | None = None) -> TRefreshMode | None:

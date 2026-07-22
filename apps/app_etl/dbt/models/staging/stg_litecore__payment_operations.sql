@@ -12,9 +12,9 @@ select
     {{ column_or_null(source('litecore', 'payment_operations'), 'terminal_id', 'string') }},
     {{ column_or_null(source('litecore', 'payment_operations'), 'entry_mode', 'string') }},
     created_at,
-    datetime(created_at, '{{ var("aml_local_timezone") }}') as created_at_local,
+    datetime(created_at, '{{ var("local_timezone") }}') as created_at_local,
     updated_at,
-    datetime(updated_at, '{{ var("aml_local_timezone") }}') as updated_at_local
+    datetime(updated_at, '{{ var("local_timezone") }}') as updated_at_local
 
 from {{ source('litecore', 'payment_operations') }}
 qualify

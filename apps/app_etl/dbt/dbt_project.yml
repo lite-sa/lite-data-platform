@@ -12,11 +12,14 @@ flags:
   send_anonymous_usage_stats: false
 
 vars:
-  # Business-local wall clock for time-of-day rules (Saudi operations;
-  # the whole stack is me-central2). Asia/Riyadh is UTC+3, no DST. Feeds
-  # the night_authorize_count / night_credit_count features below.
-  aml_local_timezone: "Asia/Riyadh"
-  # Night window, [start, end) in local hours: 00:00–05:00.
+  # Business-local wall clock, used stack-wide for local-day boundaries
+  # (Saudi operations; the whole stack is me-central2). Asia/Riyadh is
+  # UTC+3, no DST. (Renamed from aml_local_timezone 2026-07-22 once a
+  # non-AML consumer arrived — it was never AML-specific, just named
+  # after its first user.)
+  local_timezone: "Asia/Riyadh"
+  # AML night window, [start, end) in local hours: 00:00–05:00 — feeds
+  # aml_merchant_features' night_authorize_count only, hence the prefix.
   aml_night_start_hour: 0
   aml_night_end_hour: 5
   # Alert-scenario thresholds/cooldowns (marts/aml_alerts_*) were parked
@@ -30,7 +33,15 @@ models:
   app_etl:
     staging:
       +materialized: view
-    # run_date-keyed microbatch evaluation logs (see docs/aml-alert-design.md);
-    # materialization + microbatch configs live in each model's config block
-    # because begin/lookback are semantic, not tuning.
-    intermediate: {}
+    # run_date-keyed microbatch evaluation logs everywhere (see
+    # docs/dbt-primer.md §5); materialization + microbatch configs live in
+    # each model's config block because begin/lookback are semantic, not
+    # tuning. Default dataset is BQ_DATASET_CORE (profiles.yml) — the
+    # canonical, non-AML layer this project is now built around; `aml/` is
+    # the one folder routed back to BQ_DATASET_AML, since
+    # aml_merchant_features is the sole survivor of the demoted AML stack.
+    intermediate:
+      aml:
+        +schema: "{{ env_var('BQ_DATASET_AML', 'aml') }}"
+    marts:
+      +materialized: table

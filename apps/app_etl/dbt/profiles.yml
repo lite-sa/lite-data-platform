@@ -8,9 +8,15 @@ app_etl:
       type: bigquery
       method: oauth
       project: "{{ env_var('GCP_PROJECT') }}"
-      # Marts dataset. Local runs against fake sources must override this
-      # to aml_test (see .env.example), same rule as BQ_DATASET_RAW.
-      dataset: "{{ env_var('BQ_DATASET_AML', 'aml') }}"
+      # Default/home dataset for everything dbt builds: staging views plus
+      # the canonical intermediate/marts layer (payments today; future
+      # non-AML domains land here too). Local runs against fake sources
+      # must override this to core_test (see .env.example), same rule as
+      # BQ_DATASET_RAW. The one exception is the demoted AML feature mart
+      # (models/intermediate/aml/), routed back to BQ_DATASET_AML via a
+      # +schema override in dbt_project.yml + macros/generate_schema_name.sql
+      # — that macro is why this doesn't become "core_aml" for it instead.
+      dataset: "{{ env_var('BQ_DATASET_CORE', 'core') }}"
       # Data residency: never let this default to US.
       location: me-central2
       threads: 4

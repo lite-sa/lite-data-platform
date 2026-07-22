@@ -12,7 +12,7 @@ select
     payment_method,
     channel_id,
     created_at,
-    datetime(created_at, '{{ var("aml_local_timezone") }}') as created_at_local,
+    datetime(created_at, '{{ var("local_timezone") }}') as created_at_local,
     updated_at
 
 from {{ source('litecore', 'payments') }}

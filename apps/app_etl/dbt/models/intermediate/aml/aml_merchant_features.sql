@@ -56,7 +56,7 @@
     {% set run_date = "date('" ~ model.batch.event_time_start.strftime("%Y-%m-%d") ~ "')" %}
 {% else %}
     {# parse/compile-time only (no batch context, e.g. `dbt parse`) #}
-    {% set run_date = "current_date('" ~ var("aml_local_timezone") ~ "')" %}
+    {% set run_date = "current_date('" ~ var("local_timezone") ~ "')" %}
 {% endif %}
 
 {% set prev_day = "date_sub(" ~ run_date ~ ", interval 1 day)" %}
