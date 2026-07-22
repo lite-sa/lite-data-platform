@@ -1,0 +1,72 @@
+version: 2
+
+models:
+  - name: aml_merchant_features
+    description: >
+      Merchant × run_date evaluation log (microbatch, lookback 0): features
+      over complete local windows — run_date's own night for time-of-day
+      rules, trailing windows ending at run_date − 1 for the rest.
+      Point-in-time by construction — also the future ML feature surface.
+      Scenario models read from here; add features here instead of
+      re-aggregating raw in scenario SQL. Never --full-refresh in prod.
+      Spine = merchants visible in the longest trailing window or the
+      night; no visibility anywhere = no row (absence, not zero).
+      Trailing-window naming: a `_Nd` suffix = exactly N complete days,
+      [D−(N+1), D−2] — every trailing window ends at D−2 to exclude the
+      tested day. v1 carries the AML-008 night features, the AML-014
+      dormancy/burst trio, and the 30d spike average (the credit-mapped
+      features live in git history).
+    columns:
+      - name: run_date
+        description: Evaluation (knowledge) date, local. Partition key.
+        tests: [not_null]
+      - name: merchant_id
+        tests: [not_null]
+      - name: night_authorize_count
+        description: >
+          AUTHORIZE operations (any status — attempts, not successes) in
+          [00:00, 05:00) local of run_date.
+        tests: [not_null]
+      - name: example_night_pos_payment_id
+        description: >
+          payment_id of the night's earliest POS AUTHORIZE op (terminal_id
+          present) — same op as example_night_pos_terminal_id, so the pair
+          is one concrete pointer. NULL if the night had no POS op.
+      - name: example_night_pos_terminal_id
+      - name: authorize_count_90d
+        description: >
+          AUTHORIZE operations in the dormancy baseline [D−91, D−2]
+          (90 complete days) — deliberately excludes the prev-day burst
+          window, so "dormant" can't be contradicted by the burst being
+          tested. 0 within an existing row is an observed zero over the
+          window we can see (raw history starts at ingestion go-live).
+          AML-014's feature. (Renamed from baseline_authorize_count
+          2026-07-17 when a second, differently-windowed baseline arrived.)
+        tests: [not_null]
+      - name: authorize_count_avg_30d
+        description: >
+          Daily average of AUTHORIZE operations over [D−31, D−2]
+          (30 complete days), denominator fixed at 30 regardless of
+          merchant tenure or active days. Feature for the upcoming
+          spike scenario.
+        tests: [not_null]
+      - name: prev_day_authorize_count
+        description: >
+          AUTHORIZE operations on the last complete local day [D−1] —
+          AML-014's burst window.
+        tests: [not_null]
+      - name: prev_day_authorize_amount_minor
+        description: >
+          Summed amount of those ops in MINOR units, across currencies
+          (99.5% SAR today; currency-mix policy is an open design-doc
+          TODO). Attempt-grained like the counts — retried attempts
+          re-count.
+        tests: [not_null]
+      - name: example_prev_day_payment_id
+        description: >
+          payment_id of [D−1]'s earliest AUTHORIZE op, deterministic
+          tiebreak. NULL when the day had no ops.
+      - name: evaluated_at
+        description: >
+          Wall-clock generation timestamp — diverges from run_date on
+          backfills/reruns, which is how you detect them.

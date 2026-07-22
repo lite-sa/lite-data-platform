@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: payments_daily_summary
+    description: >
+      Merchant x run_date payment volume — counts and summed amount over
+      the last complete local day (run_date − 1). run_date-keyed
+      microbatch log (lookback 0), built from
+      int_payments__daily_activity. Never --full-refresh in prod. The
+      canonical starter mart: pure payment volume/status/channel facts,
+      no AML rule thresholds — future non-AML marts (acceptance, feature
+      store, …) follow this same shape.
+    columns:
+      - name: run_date
+        description: Evaluation (activity) date, local. Partition key.
+        tests: [not_null]
+      - name: merchant_id
+        tests: [not_null]
+      - name: payment_count
+        description: Distinct payments with at least one operation that day.
+        tests: [not_null]
+      - name: operation_count
+        description: Total operations that day (attempt-grained, not deduped by payment).
+        tests: [not_null]
+      - name: total_amount_minor
+        description: >
+          Summed amount_minor across operations and currencies (99.5% SAR
+          today — currency-mix policy is an open TODO, same as
+          aml_merchant_features).
+        tests: [not_null]
+      - name: evaluated_at
+        description: >
+          Wall-clock generation timestamp — diverges from run_date on
+          backfills/reruns, which is how you detect them.

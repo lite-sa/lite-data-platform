@@ -15,3 +15,6 @@ data/
 .idea/
 .vscode/
 .DS_Store
+apps/app_etl/dbt/target/
+apps/app_etl/dbt/logs/
+notebooks/

@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: litecore
+    description: >
+      dlt-landed raw tables (see ../ingestion). Watermarked with a 10-min
+      safety lag, so "now" here is always at least SAFETY_LAG behind the
+      source. Only the tables the models actually read are declared —
+      add others when a model needs them.
+    database: "{{ env_var('GCP_PROJECT') }}"
+    schema: "{{ env_var('BQ_DATASET_RAW', 'raw_litecore') }}"
+    tables:
+      - name: payments
+        description: One row per payment intent; owns merchant_id.
+      - name: payment_operations
+        description: >
+          Append-only operation log (authorize/capture/refund/…) per
+          payment; owns terminal_id, operation_type, POS fields.

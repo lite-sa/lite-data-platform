@@ -38,12 +38,15 @@ lite-data-platform/
 ## Getting started
 
 ```bash
-uv sync           # creates .venv, provisions Python 3.14, installs the workspace
+uv sync           # creates .venv, provisions Python 3.13, installs the workspace
 uv run pytest     # scaffold sanity tests
 ```
 
 Jobs read their settings from env vars (see `app_etl/config.py`): `GCP_PROJECT`,
-`GCS_BUCKET`, `PG_DSN`, and optionally `BQ_DATASET_RAW` / `BQ_DATASET_OPS`.
+`GCS_BUCKET`, one Postgres connection mode (`PG_HOST`/`PG_PORT`/`PG_USER` for
+the Auth Proxy locally, `PG_INSTANCE_CONNECTION_NAME`/`PG_IAM_USER` on Cloud
+Run), and optionally `BQ_DATASET_RAW`. The source *database* is not env
+config — one pipeline per database, stated in each pipeline file.
 Single dev GCP project for now; staging environments can be added later
 
 ## Architecture decisions (v1)
@@ -51,7 +54,7 @@ Single dev GCP project for now; staging environments can be added later
 | Decision | Choice | Why |
 |---|---|---|
 | Movement | dlt pipelines: PG read replica (`sql_database` source) → Parquet staged on GCS → BQ batch load | Standard framework, and still the free-load path (staging + batch load jobs cost nothing); no CDC infra pre-launch. Revisit CDC (Debezium et al.) when volume/latency demands it. |
-| Incremental capture | dlt incremental cursor on `created_at`, extraction query capped at `now() − safety lag` | dlt tracks the watermark, but not the Postgres commit-order race (`now()` is transaction *start* time); the capped upper bound closes it. Zero duplicates, no dedup contract downstream. See `apps/app_etl/README.md`. |
+| Incremental capture | dlt incremental cursor on `updated_at` (sources are mutable; updates bump it), extraction query capped at `now() − safety lag` | dlt tracks the watermark, but not the Postgres commit-order race (`now()` is transaction *start* time); the capped upper bound closes it. Raw stores one row per version — grain `(primary key, updated_at)` — and dbt staging dedups to the latest; deletes and updates that skip `updated_at` are invisible. See `apps/app_etl/README.md`. |
 | Watermark state | dlt pipeline state, stored in the destination (`_dlt_pipeline_state`; load history in `_dlt_loads`) | Advances only with a successful load; survives redeploys; nothing hand-rolled. The earlier `ops.ingestion_runs` run log is dropped for v1 — add observability back only if we miss it. |
 | Schema | Column allowlist on every resource (PII deny-by-default); dlt owns raw DDL + evolution; dbt contracts once marts have consumers | One source of truth, no drift to police. See `docs/schema-management.md`. |
 | Config tables | Daily snapshot rows keyed by snapshot date into a date-partitioned table, idempotent per day | Point-in-time history for as-of joins; exact dlt write strategy (merge on small config tables is cheap) settled in step 2. |

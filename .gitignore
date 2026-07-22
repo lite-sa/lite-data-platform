@@ -15,6 +15,11 @@ data/
 *.parquet
 *.duckdb
 
+# dbt build artifacts
+apps/app_etl/dbt/target/
+apps/app_etl/dbt/logs/
+infra.env
+
 # Editors / OS
 .DS_Store
 .idea/
