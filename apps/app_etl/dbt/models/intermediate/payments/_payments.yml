@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: int_payments__daily_activity
+    description: >
+      One row per payment operation from the last complete local day
+      (run_date − 1), widened with its parent payment's merchant_id,
+      status, method, and channel. run_date-keyed microbatch log
+      (lookback 0) — the canonical, non-AML building block for payments
+      features; add new features here or in a sibling model, never by
+      re-aggregating raw. Never --full-refresh in prod.
+    columns:
+      - name: run_date
+        description: Evaluation date, local. Partition key.
+        tests: [not_null]
+      - name: payment_operation_id
+        tests: [not_null, unique]
+      - name: payment_id
+        tests: [not_null]
+      - name: merchant_id
+        tests: [not_null]
+      - name: operation_type
+        tests: [not_null]
+      - name: amount_minor
+        description: >
+          Minor units, source currency (no cross-currency conversion at
+          this grain — see payments_daily_summary for the summed view).
+        tests: [not_null]
+      - name: evaluated_at
+        description: >
+          Wall-clock generation timestamp — diverges from run_date on
+          backfills/reruns, which is how you detect them.

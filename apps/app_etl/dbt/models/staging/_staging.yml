@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_litecore__payments
+    description: >
+      Latest version per payment (raw appends one row per source-row
+      version). The unique test below is the dedup contract — if it
+      fails, the qualify clause or the raw grain regressed.
+    columns:
+      - name: payment_id
+        tests: [not_null, unique]
+
+  - name: stg_litecore__payment_operations
+    description: >
+      Latest version per payment operation, plus local wall-clock
+      timestamps for time-of-day rules.
+    columns:
+      - name: payment_operation_id
+        tests: [not_null, unique]

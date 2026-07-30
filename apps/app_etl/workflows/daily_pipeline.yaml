@@ -1,0 +1,73 @@
+# Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
+# database — PARKED, see below) -> dbt build. One Cloud Scheduler trigger
+# executes this workflow daily instead of staggered per-job schedules
+# guessing each other's runtimes. The AML alert-export stage this workflow
+# used to run after transform is parked with the alert mart stack (see
+# dbt_project.yml) — recover from git history (DAT-15-aml-p0) if it comes
+# back.
+#
+# Deploy (user-run, tracked in docs/provisioning.md):
+#   gcloud workflows deploy litecore-daily \
+#     --source=apps/app_etl/workflows/daily_pipeline.yaml \
+#     --location=me-central2 \
+#     --service-account=<SA with run.jobs.run on the jobs below>
+#
+# A failed job fails its connector call, which fails the whole execution —
+# the next stage never runs on a partial predecessor. No retry policy in
+# v1: a rerun is a manual `gcloud workflows run litecore-daily
+# --location=me-central2` after fixing the cause.
+
+main:
+  steps:
+    # TODO(extract): PARKED — dev ingestion from Cloud Run is blocked on
+    # the read-replica / network path (docs/provisioning.md, Phase A).
+    # Until then the workflow runs transform -> export only, over whatever
+    # raw_test holds (loaded from laptops). Restore this as the first stage
+    # when source access lands; the per-database jobs
+    # (ingest-{payment-v2,user,business-management}, command
+    # `python -m app_etl.ingestion.<database>`) also still need creating —
+    # the live ingest-* jobs are the stale per-table ones.
+    # - extract:
+    #     parallel:
+    #       branches:
+    #         - payment_v2:
+    #             steps:
+    #               - run_payment_v2:
+    #                   call: run_job
+    #                   args:
+    #                     job: ingest-payment-v2
+    #         - user:
+    #             steps:
+    #               - run_user:
+    #                   call: run_job
+    #                   args:
+    #                     job: ingest-user
+    #         - business_management:
+    #             steps:
+    #               - run_business_management:
+    #                   call: run_job
+    #                   args:
+    #                     job: ingest-business-management
+    - transform:
+        call: run_job
+        args:
+          job: transform-aml
+
+# Run one Cloud Run Job and block until its execution finishes; a failed
+# execution raises and fails the workflow. Region is pinned to me-central2
+# (data residency) rather than inherited from the workflow's own location.
+run_job:
+  params: [job]
+  steps:
+    - execute:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/locations/me-central2/jobs/" + job}
+          connector_params:
+            # Total wait for the execution; must exceed the slowest job's
+            # runtime (the connector default of 1800s would mark a healthy
+            # but slow dbt build as failed).
+            timeout: 3600
+        result: execution
+    - finished:
+        return: ${execution.name}

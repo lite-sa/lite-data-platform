@@ -58,26 +58,24 @@ def test_settings_cloudsql_mode(clean_env):
     assert s.pg_ip_type == "private"  # default
 
 
-@pytest.mark.parametrize(
-    "env",
-    [
-        pytest.param(
-            {
-                "PG_HOST": "127.0.0.1",
-                "PG_USER": "u",
-                "PG_INSTANCE_CONNECTION_NAME": "proj:me-central2:inst",
-            },
-            id="both",
-        ),
-        pytest.param({}, id="neither"),
-    ],
-)
-def test_settings_requires_exactly_one_pg_mode(clean_env, env):
-    for var, value in env.items():
-        clean_env.setenv(var, value)
+def test_settings_rejects_both_pg_modes(clean_env):
+    clean_env.setenv("PG_HOST", "127.0.0.1")
+    clean_env.setenv("PG_USER", "u")
+    clean_env.setenv("PG_INSTANCE_CONNECTION_NAME", "proj:me-central2:inst")
 
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="at most one"):
         Settings.from_env()
+
+
+def test_settings_no_pg_mode_loads_but_cannot_connect(clean_env):
+    """Transform/export jobs set no source connection at all — loading must
+    succeed (they never touch Postgres) and the failure must move to the
+    point of use, where an ingestion job would hit it at startup."""
+    s = Settings.from_env()
+    assert s.pg_host is None and s.pg_instance is None
+
+    with pytest.raises(ValueError, match="no source connection"):
+        pg_credentials(s, "payment_v2")
 
 
 def test_pg_dsn_quotes_iam_email():
