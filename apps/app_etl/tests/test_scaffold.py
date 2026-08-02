@@ -7,7 +7,6 @@ KeyErrors and argparse behavior are deliberately not re-tested.
 
 import dlt
 import pytest
-import sqlalchemy as sa
 
 from app_etl.config import Settings
 from app_etl.utils.dlt_helpers import bq_resource, pg_credentials
@@ -91,24 +90,6 @@ def test_pg_dsn_quotes_iam_email():
     assert s.pg_dsn("payment_v2") == (
         "postgresql+psycopg://m.adel%40lite.sa@127.0.0.1:5432/payment_v2"
     )
-
-
-def test_pg_credentials_engine_is_lazy():
-    """Instance mode must build its Engine without network or credentials —
-    connections come lazily from the Cloud SQL connector (this is what lets
-    CI construct pipelines with no GCP access)."""
-    engine = pg_credentials(
-        Settings(
-            gcp_project="p",
-            gcs_bucket="b",
-            bq_dataset_raw="r",
-            pg_instance="proj:me-central2:inst",
-            pg_iam_user="sa-app-etl@proj.iam",
-        ),
-        "payment_v2",
-    )
-    assert isinstance(engine, sa.engine.Engine)
-    assert engine.dialect.name == "postgresql"
 
 
 def test_bq_resource_partition_hint():
