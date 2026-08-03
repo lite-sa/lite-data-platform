@@ -14,6 +14,7 @@ factories.
 | `ingestion/payment_v2.py` | `payment_v2`: `payments`, `payment_operations` | incremental append on `updated_at` — one row per version | hourly |
 | `ingestion/user.py` | `user`: `merchants` | full replace (interim; snapshots below are the target) | daily |
 | `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim, as above) | daily |
+| `ingestion/risk_management.py` | `risk_management`: `risk_rule` (full replace, interim); `transaction_rule_evaluation`, `velocity_bucket`, `velocity_event` (incremental append — `transaction_rule_evaluation` on `evaluation_time`, the other two on `updated_at`) | mixed, see file | hourly |
 
 Targets land in `BQ_DATASET_RAW` (`raw_litecore`; local runs keep
 `raw_test`), named after the source table.
