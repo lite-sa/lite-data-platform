@@ -1760,6 +1760,19 @@ wheels = [
 ]
 
 [[package]]
+name = "jupyterlab-code-formatter"
+version = "3.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jupyter-server" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e7/05/a4115d428c07e70c8fef8790f234afb8ec5d31537f6ef643748b85c89759/jupyterlab_code_formatter-3.0.3.tar.gz", hash = "sha256:179e3c85cf6c0fc3c321c84bae446f3a2ad517e26606989c9485ce72e6c781c5", size = 3324163, upload-time = "2026-02-11T14:57:52.291Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/a1/8de7afd92c475f7ed5487a8070fb69c869039ec0aef46ef11543b86bbef4/jupyterlab_code_formatter-3.0.3-py3-none-any.whl", hash = "sha256:e10de34012c8acd935a7781980e629e3cb7635967d83e03ca662c844b23a91d8", size = 33043, upload-time = "2026-02-11T14:57:50.751Z" },
+]
+
+[[package]]
 name = "jupyterlab-pygments"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1853,6 +1866,7 @@ dependencies = [
 dev = [
     { name = "bigframes" },
     { name = "jupyterlab" },
+    { name = "jupyterlab-code-formatter" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "shandy-sqlfmt" },
@@ -1865,6 +1879,7 @@ requires-dist = [{ name = "app-etl", editable = "apps/app_etl" }]
 dev = [
     { name = "bigframes", specifier = ">=2.45.0" },
     { name = "jupyterlab", specifier = ">=4.6.1" },
+    { name = "jupyterlab-code-formatter", specifier = ">=3.0.3" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.5" },
     { name = "shandy-sqlfmt", specifier = ">=0.30.0" },

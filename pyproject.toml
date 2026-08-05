@@ -22,6 +22,7 @@ app-etl = { workspace = true }
 dev = [
     "bigframes>=2.45.0",
     "jupyterlab>=4.6.1",
+    "jupyterlab-code-formatter>=3.0.3",
     "pytest>=8",
     "ruff>=0.5",
     "shandy-sqlfmt>=0.30.0",
@@ -36,6 +37,8 @@ addopts = "--import-mode=importlib"
 [tool.uv]
 package = false
 
-# Exploratory notebooks are scratch work, not CI-gated code.
-[tool.ruff]
-extend-exclude = ["notebooks"]
+# Exploratory notebooks are scratch work, not CI-gated code: excluded from
+# `ruff check` (what CI runs) but not from `ruff format`, so editor
+# format-on-save still works in them.
+[tool.ruff.lint]
+exclude = ["notebooks/**"]
