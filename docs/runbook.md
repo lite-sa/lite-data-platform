@@ -377,6 +377,15 @@ table that is being retired entirely:
 bq --project_id=$DEV rm -t "$DEV:$RAW_DATASET.payments"
 ```
 
+```bash
+bq --project_id=$DEV query --nouse_legacy_sql "
+drop table \`$DEV.raw_litecore.payments\`;
+drop table \`$DEV.raw_litecore.payment_operations\`;
+drop table \`$DEV.raw_litecore._dlt_loads\`;
+drop table \`$DEV.raw_litecore._dlt_pipeline_state\`;
+drop table \`$DEV.raw_litecore._dlt_version\`;"
+```
+
 ### 6.3 Drop and re-bootstrap a whole test dataset
 
 `-r` deletes every table in it, including the `_dlt_*` state tables —

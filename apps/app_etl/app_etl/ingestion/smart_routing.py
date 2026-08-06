@@ -131,6 +131,8 @@ def run() -> None:
         loader_file_format="parquet",
         refresh=refresh_mode(),
     )
+    # per-table extracted row counts — load_info's summary doesn't include them
+    print(pipeline.last_trace.last_normalize_info)
     print(load_info)
     load_info.raise_on_failed_jobs()
 

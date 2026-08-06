@@ -7,10 +7,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
+# PYTHONUNBUFFERED: without it stdout only flushes at process exit, so
+# Cloud Logging shows nothing mid-run and a killed job loses all output.
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1
 
 # Two-step sync so the third-party venv layer (~350MB) only rebuilds —
 # and re-pushes — when the lockfile changes, not on every code edit.
