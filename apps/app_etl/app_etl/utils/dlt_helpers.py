@@ -124,7 +124,11 @@ def pg_credentials(settings: Settings, db: str) -> str | sa.engine.Engine:
             user=settings.pg_iam_user,
             db=db,
             enable_iam_auth=True,
-            ip_type=IPTypes.PRIVATE if settings.pg_ip_type == "private" else IPTypes.PUBLIC,
+            ip_type={
+                "private": IPTypes.PRIVATE,
+                "public": IPTypes.PUBLIC,
+                "psc": IPTypes.PSC,
+            }[settings.pg_ip_type],
         )
 
     return sa.create_engine(
