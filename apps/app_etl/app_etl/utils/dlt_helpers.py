@@ -142,6 +142,15 @@ def bq_pipeline(pipeline_name: str, settings: Settings) -> dlt.Pipeline:
     into `settings.bq_dataset_raw`. The staging prefix mirrors the dataset
     name, so local test runs (BQ_DATASET_RAW=raw_test) can never collide
     with the real raw_litecore landing area.
+
+    All pipelines share this one dataset — the dataset is the source
+    *system* (the LiteCore instance), not the database — so every resource
+    namespaces its destination table as `<database>__<table>` via a
+    `table_name` hint (double underscore, because database and table names
+    contain single ones). Different service databases will eventually carry
+    same-named tables; the prefix is what keeps them from colliding. A
+    genuinely different source system gets its own `raw_<system>` dataset,
+    not a prefix — see docs/schema-management.md.
     """
     if not settings.gcs_bucket:
         raise ValueError("GCS_BUCKET is required for ingestion staging")

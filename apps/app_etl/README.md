@@ -9,14 +9,20 @@ tables, cursor, write disposition, partition column); shared plumbing is
 `utils/dlt_helpers.py`. New tables copy an existing table block — no
 factories.
 
-| Pipeline | Source (db: tables, all `public`) | Mode | Cadence |
-|---|---|---|---|
-| `ingestion/payment_v2.py` | `payment_v2`: `payments`, `payment_operations` | incremental append on `updated_at` — one row per version | hourly |
-| `ingestion/user.py` | `user`: `merchants` | full replace (interim; snapshots below are the target) | daily |
-| `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim, as above) | daily |
+| Pipeline | Source (db: tables, all `public`) | Mode |
+|---|---|---|
+| `ingestion/payment_v2.py` | `payment_v2`: `payments`, `payment_operations` | incremental append on `updated_at` — one row per version |
+| `ingestion/ledger.py` | `ledger`: `account`, `entry` | incremental append on `updated_at`, as above |
+| `ingestion/smart_routing.py` | `smart_routing`: `profile`, `routing_rule` / `transaction_evaluation` | full replace (interim) / incremental append |
+| `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim; snapshots below are the target) |
 
+All pipelines run through the one daily workflow
+(`workflows/daily_pipeline.yaml`) — no staggered per-job schedules.
 Targets land in `BQ_DATASET_RAW` (`raw_litecore`; local runs keep
-`raw_test`), named after the source table.
+`raw_test`), named `<database>__<table>`: every pipeline loads the same
+dataset (dataset = source system, LiteCore), so the double-underscore
+prefix namespaces per-service databases that will eventually carry
+same-named tables — see `docs/schema-management.md`.
 
 ## Running
 

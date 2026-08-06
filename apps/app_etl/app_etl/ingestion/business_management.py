@@ -1,5 +1,5 @@
-"""business_management database → {BQ_DATASET_RAW}.business_entities — full
-replace.
+"""business_management database →
+{BQ_DATASET_RAW}.business_management__business_entities — full replace.
 
 One pipeline per source database; `business_entities` is the only table we
 take from `business_management` today. Small mutable config table: full
@@ -97,7 +97,8 @@ def run() -> None:
             included_columns=BUSINESS_ENTITIES_COLUMNS,
         ).apply_hints(
             # TODO: add snapshot_date partitions for point-in-time joins
-            write_disposition="replace"
+            table_name=f"{DATABASE}__business_entities",
+            write_disposition="replace",
         ),
         # `business_id` (not `id`, the source PK) is the natural join key:
         # it's the only other uniquely-indexed column and reads as this

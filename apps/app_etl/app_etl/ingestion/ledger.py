@@ -1,4 +1,4 @@
-"""ledger database → {BQ_DATASET_RAW}.{account,entry} — one pipeline per
+"""ledger database → {BQ_DATASET_RAW}.ledger__{account,entry} — one pipeline per
 source database (a pipeline connects to exactly one DB), both tables
 incremental append.
 
@@ -100,6 +100,7 @@ def run() -> None:
             included_columns=ACCOUNT_COLUMNS,
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
+            table_name=f"{DATABASE}__account",
             primary_key="id",
             incremental=capped_incremental("updated_at"),
             write_disposition="append",
@@ -119,6 +120,7 @@ def run() -> None:
             included_columns=ENTRY_COLUMNS,
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
+            table_name=f"{DATABASE}__entry",
             primary_key="id",
             incremental=capped_incremental("updated_at"),
             write_disposition="append",
