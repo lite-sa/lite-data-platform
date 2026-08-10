@@ -1,6 +1,6 @@
-"""smart_routing database → {BQ_DATASET_RAW}.{profile,routing_rule,
-transaction_evaluation} — one pipeline per source database (a pipeline
-connects to exactly one DB).
+"""smart_routing database → {BQ_DATASET_RAW}.smart_routing__{profile,
+routing_rule,transaction_evaluation} — one pipeline per source database
+(a pipeline connects to exactly one DB).
 
 `profile` and `routing_rule` are small mutable routing-config tables: full
 extract every run, `replace` disposition — same interim pattern as
@@ -88,7 +88,8 @@ def run() -> None:
             included_columns=PROFILE_COLUMNS,
         ).apply_hints(
             # TODO: add snapshot_date partitions for point-in-time joins
-            write_disposition="replace"
+            table_name=f"{DATABASE}__profile",
+            write_disposition="replace",
         ),
         cluster="merchant_id",
     )
@@ -101,7 +102,8 @@ def run() -> None:
             included_columns=ROUTING_RULE_COLUMNS,
         ).apply_hints(
             # TODO: add snapshot_date partitions for point-in-time joins
-            write_disposition="replace"
+            table_name=f"{DATABASE}__routing_rule",
+            write_disposition="replace",
         ),
         cluster="profile_id",
     )
@@ -114,6 +116,7 @@ def run() -> None:
             included_columns=TRANSACTION_EVALUATION_COLUMNS,
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
+            table_name=f"{DATABASE}__transaction_evaluation",
             primary_key="id",
             incremental=capped_incremental("updated_at"),
             write_disposition="append",
@@ -128,6 +131,8 @@ def run() -> None:
         loader_file_format="parquet",
         refresh=refresh_mode(),
     )
+    # per-table extracted row counts — load_info's summary doesn't include them
+    print(pipeline.last_trace.last_normalize_info)
     print(load_info)
     load_info.raise_on_failed_jobs()
 

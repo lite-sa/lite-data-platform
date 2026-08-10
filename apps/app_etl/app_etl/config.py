@@ -46,7 +46,11 @@ class Settings:
     # Mode 2: Cloud SQL IAM auth, e.g. lite-litecore-dev:me-central2:non-cde-postgres
     pg_instance: str | None = None
     pg_iam_user: str | None = None  # SA email *minus* ".gserviceaccount.com"
-    pg_ip_type: str = "private"     # "private" (Cloud Run) | "public" (laptop)
+    # "private" (PSA, same-VPC only) | "public" (laptop) | "psc" (Private
+    # Service Connect — required when the instance lives in a different,
+    # unpeered VPC/project, e.g. this job's lite-data-dev connecting to
+    # litecore dev's non-cde instance).
+    pg_ip_type: str = "private"
 
     def pg_dsn(self, db: str) -> str:
         """SQLAlchemy-style DSN for dlt's sql_table(credentials=...). Builds
@@ -78,8 +82,8 @@ class Settings:
                 "set at most one of PG_HOST or PG_INSTANCE_CONNECTION_NAME, got both"
             )
         ip_type = os.environ.get("PG_IP_TYPE", "private")
-        if ip_type not in ("private", "public"):
-            raise ValueError(f"PG_IP_TYPE must be 'private' or 'public', got {ip_type!r}")
+        if ip_type not in ("private", "public", "psc"):
+            raise ValueError(f"PG_IP_TYPE must be 'private', 'public', or 'psc', got {ip_type!r}")
         return cls(
             gcp_project=os.environ["GCP_PROJECT"],
             bq_dataset_raw=os.environ.get("BQ_DATASET_RAW", "raw_litecore"),

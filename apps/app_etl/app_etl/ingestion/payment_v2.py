@@ -1,4 +1,4 @@
-"""payment_v2 database → {BQ_DATASET_RAW}.{payments,payment_operations} —
+"""payment_v2 database → {BQ_DATASET_RAW}.payment_v2__{payments,payment_operations} —
 one pipeline per source database (a pipeline connects to exactly one DB),
 both tables incremental append.
 
@@ -41,6 +41,7 @@ def run() -> None:
             table="payments",
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
+            table_name=f"{DATABASE}__payments",
             primary_key="id",
             incremental=capped_incremental("updated_at"),
             write_disposition="append",
@@ -57,6 +58,7 @@ def run() -> None:
             table="payment_operations",
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
+            table_name=f"{DATABASE}__payment_operations",
             primary_key="id",
             incremental=capped_incremental("updated_at"),
             write_disposition="append",
@@ -69,6 +71,8 @@ def run() -> None:
     load_info = pipeline.run(
         [payments, payment_operations], loader_file_format="parquet", refresh=refresh_mode()
     )
+    # per-table extracted row counts — load_info's summary doesn't include them
+    print(pipeline.last_trace.last_normalize_info)
     print(load_info)
     load_info.raise_on_failed_jobs()
 

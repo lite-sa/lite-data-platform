@@ -29,7 +29,7 @@ range dbt injected for the batch). That rendering step is all dbt "is".
 |--------------------------------------|--------------------------------------------|
 | DataFrame variable                   | one `.sql` model file                      |
 | referencing `df_a` in `df_b`         | `{{ ref('model_a') }}`                     |
-| `spark.read.table(...)`              | `{{ source('litecore', 'payments') }}`     |
+| `spark.read.table(...)`              | `{{ source('litecore', 'payment_v2__payments') }}` |
 | write mode / `.cache()`              | materialization (`view`/`table`/`incremental`) |
 | `df.show()`                          | `dbt show --select model` / `--inline`     |
 | assertions                           | `dbt test` (a test = SELECT that must return 0 rows) |
