@@ -21,6 +21,8 @@ ever visible — Postgres `UPDATE` overwrites the tuple in place, so
 intermediate states aren't queryable once superseded, regardless of
 watermark design. Capturing every transition losslessly needs WAL-based
 CDC (e.g. Datastream), not polling; out of scope for v1.
+
+No column allowlists — ingest-everything posture
 """
 
 from __future__ import annotations
@@ -39,54 +41,6 @@ from app_etl.utils.dlt_helpers import (
 
 DATABASE = "ledger"
 
-# `account_number`/`virtual_iban` excluded: real bank-account identifiers
-# (an IBAN enables direct SEPA payment initiation, arguably more sensitive
-# than a masked card number). `opened_by` excluded: reads as an internal
-# staff identifier, same pattern as agent_email/sales_email in
-# business_entities/payment_operations. Everything else is account
-# metadata/balance, not personal data.
-ACCOUNT_COLUMNS = [
-    "id",
-    "name",
-    "direction",
-    "status",
-    "tag",
-    "type",
-    "owner_type",
-    "owner_product_type",
-    "owner",
-    "currency",
-    "available_balance",
-    "description",
-    "last_transaction_at",
-    "created_at",
-    "updated_at",
-]
-
-# No PII on this table — every column is included. Note: `order_id` here
-# is a smallint intra-transaction sequence number, unrelated to
-# payments.order_id despite the shared name.
-ENTRY_COLUMNS = [
-    "id",
-    "source",
-    "method",
-    "external_reference_id",
-    "type",
-    "amount",
-    "direction",
-    "currency",
-    "exchange_rate",
-    "available_balance_after",
-    "account_id",
-    "parent_transaction_id",
-    "created_at",
-    "updated_at",
-    "hold_at",
-    "captured_at",
-    "released_at",
-    "order_id",
-]
-
 
 def run() -> None:
     settings = Settings.from_env()
@@ -97,7 +51,6 @@ def run() -> None:
             credentials=credentials,
             schema="public",
             table="account",
-            included_columns=ACCOUNT_COLUMNS,
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
             table_name=f"{DATABASE}__account",
@@ -117,7 +70,6 @@ def run() -> None:
             credentials=credentials,
             schema="public",
             table="entry",
-            included_columns=ENTRY_COLUMNS,
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
             table_name=f"{DATABASE}__entry",

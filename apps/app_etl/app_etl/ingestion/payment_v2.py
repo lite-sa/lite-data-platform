@@ -31,10 +31,6 @@ def run() -> None:
     credentials = pg_credentials(settings, DATABASE)
 
     payments = bq_resource(
-        # TODO: add the column allowlist before pointing at a non-dummy source;
-        # jsonb columns to deny first: risk, customer, order_data, device,
-        # threeds_input, threeds_result, return_url, metadata, routing_result,
-        # risk_result
         sql_table(
             credentials=credentials,
             schema="public",
@@ -51,7 +47,6 @@ def run() -> None:
     )
 
     payment_operations = bq_resource(
-        # TODO: add the column allowlist before pointing at a non-dummy source
         sql_table(
             credentials=credentials,
             schema="public",
