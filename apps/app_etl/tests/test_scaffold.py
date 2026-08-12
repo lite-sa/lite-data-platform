@@ -34,7 +34,11 @@ def clean_env(tmp_path, monkeypatch):
 
 def test_pipeline_modules_import():
     # The only place the entry-point modules are imported before Cloud Run.
+    import app_etl.ingestion.business_management  # noqa: F401
+    import app_etl.ingestion.ledger  # noqa: F401
     import app_etl.ingestion.payment_v2  # noqa: F401
+    import app_etl.ingestion.settlement  # noqa: F401
+    import app_etl.ingestion.smart_routing  # noqa: F401
 
 
 def test_settings_proxy_mode(clean_env):

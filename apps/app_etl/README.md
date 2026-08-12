@@ -136,9 +136,11 @@ run (partitioning is immutable at CREATE).
 
 ## Schema
 
-dlt owns raw DDL and additive evolution; every resource declares a PII
-deny-by-default column allowlist (TODO while the dev source is all dummy
-data); the exported schema YAML under `schemas/` is the changelog. Rules:
+dlt owns raw DDL and additive evolution; resources ingest every source
+column — the deny-by-default allowlist stance was reversed 2026-08-12
+(PII boundary = raw IAM + dbt staging column lists + staging-bucket
+lifecycle; each pipeline file's docstring keeps its trim map); the
+exported schema YAML under `schemas/` is the changelog. Rules:
 `docs/schema-management.md`.
 
 jsonb/array source columns can't load into BigQuery from Parquet as a

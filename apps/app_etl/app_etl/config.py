@@ -32,7 +32,6 @@ from dotenv import find_dotenv, load_dotenv
 class Settings:
     gcp_project: str            # GCP project id (single dev project for now)
     bq_dataset_raw: str         # landing dataset in BQ, e.g. raw_litecore
-    bq_dataset_aml: str = "aml" # dbt marts dataset (aml_merchant_features)
 
     # Raw landing bucket (dlt staging), e.g. lite-data-dev-raw. Required by
     # ingestion only — bq_pipeline() enforces it; the transform job leaves
@@ -87,7 +86,6 @@ class Settings:
         return cls(
             gcp_project=os.environ["GCP_PROJECT"],
             bq_dataset_raw=os.environ.get("BQ_DATASET_RAW", "raw_litecore"),
-            bq_dataset_aml=os.environ.get("BQ_DATASET_AML", "aml"),
             gcs_bucket=os.environ.get("GCS_BUCKET"),
             pg_host=pg_host,
             pg_port=int(os.environ.get("PG_PORT", "5432")),
