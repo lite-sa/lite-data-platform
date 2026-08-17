@@ -145,7 +145,18 @@ def bq_pipeline(pipeline_name: str, settings: Settings) -> dlt.Pipeline:
     pipeline's resources share one connection), staging on GCS and loading
     into `settings.bq_dataset_raw`. The staging prefix mirrors the dataset
     name, so local test runs (BQ_DATASET_RAW=raw_test) can never collide
-    with the real raw_litecore landing area.
+    with the real raw_litecore landing area — and additionally carries the
+    pipeline name. The data tables are already disjoint across pipelines
+    (`<database>__<table>`), but the dlt *system* tables
+    (`_dlt_pipeline_state`) share a name, and dlt truncates a table's
+    staging folder before loading it
+    (`truncate_tables_on_staging_destination_before_load`, default True).
+    Two pipelines staging under one prefix therefore race: one truncates
+    the shared `_dlt_pipeline_state/` folder while the other's BigQuery
+    load is still reading its file — the terminal "matched no files"
+    failures seen when the daily workflow ran its ingest jobs in parallel
+    (2026-08-17). The per-pipeline prefix removes the collision for any
+    concurrent pair of runs, scheduled or manual.
 
     All pipelines share this one dataset — the dataset is the source
     *system* (the LiteCore instance), not the database — so every resource
@@ -167,7 +178,7 @@ def bq_pipeline(pipeline_name: str, settings: Settings) -> dlt.Pipeline:
             project_id=settings.gcp_project, location="me-central2"
         ),
         staging=dlt.destinations.filesystem(
-            bucket_url=f"gs://{settings.gcs_bucket}/{settings.bq_dataset_raw}"
+            bucket_url=f"gs://{settings.gcs_bucket}/{settings.bq_dataset_raw}/{pipeline_name}"
         ),
         dataset_name=settings.bq_dataset_raw,
     )
