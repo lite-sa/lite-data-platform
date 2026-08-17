@@ -1,7 +1,19 @@
-# Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
-# database) -> dbt build (PARKED, see below). One Cloud Scheduler trigger
-# executes this workflow daily instead of staggered per-job schedules
-# guessing each other's runtimes.
+# Daily pipeline DAG: extraction (sequential, one Cloud Run Job per
+# source database) -> dbt build (PARKED, see below). One Cloud Scheduler
+# trigger executes this workflow daily instead of staggered per-job
+# schedules guessing each other's runtimes.
+#
+# Sequential, not parallel, since 2026-08-17. The parallel version hit
+# random terminal load failures ("matched no files" on a staged
+# _dlt_pipeline_state parquet): every pipeline stages under the same GCS
+# prefix and loads the same dataset, the dlt system tables share a name
+# across pipelines, and dlt truncates a table's staging folder before
+# loading it — so one pipeline's truncate could delete a sibling's
+# just-staged state file mid-load. The staging prefix is now namespaced
+# per pipeline (utils/dlt_helpers.py::bq_pipeline), which removes the
+# collision even for overlapping manual runs; sequential is kept anyway —
+# it also serializes extraction load on the source replica, and at one
+# execution/day the wall-clock cost is irrelevant.
 #
 # Deploy (user-run, tracked in docs/lite-data-prod-provisioning.md Phase 5):
 #   gcloud workflows deploy litecore-daily \
@@ -9,49 +21,35 @@
 #     --location=me-central2 \
 #     --service-account=<SA with run.invoker on the jobs below + run.viewer>
 #
-# A failed job fails its connector call, which fails its branch and the
-# whole execution — sibling branches are cancelled, but a Cloud Run
-# execution already started by a cancelled branch runs to completion on
-# its own. Reruns are safe either way: every pipeline is watermarked
-# (incremental) or full-extract (snapshot). No retry policy in v1: a
-# rerun is a manual `gcloud workflows run litecore-daily
-# --location=me-central2` after fixing the cause.
+# A failed job fails its connector call and the whole execution; the
+# remaining jobs are skipped that day. Reruns are safe: every pipeline is
+# watermarked (incremental) or full-extract (snapshot), so the next
+# successful run catches up. No retry policy in v1: a rerun is a manual
+# `gcloud workflows run litecore-daily --location=me-central2` after
+# fixing the cause.
 
 main:
   steps:
-    - extract:
-        parallel:
-          branches:
-            - payment_v2:
-                steps:
-                  - run_payment_v2:
-                      call: run_job
-                      args:
-                        job: ingest-payment-v2
-            - ledger:
-                steps:
-                  - run_ledger:
-                      call: run_job
-                      args:
-                        job: ingest-ledger
-            - smart_routing:
-                steps:
-                  - run_smart_routing:
-                      call: run_job
-                      args:
-                        job: ingest-smart-routing
-            - business_management:
-                steps:
-                  - run_business_management:
-                      call: run_job
-                      args:
-                        job: ingest-business-management
-            - settlement:
-                steps:
-                  - run_settlement:
-                      call: run_job
-                      args:
-                        job: ingest-settlement
+    - run_payment_v2:
+        call: run_job
+        args:
+          job: ingest-payment-v2
+    - run_ledger:
+        call: run_job
+        args:
+          job: ingest-ledger
+    - run_smart_routing:
+        call: run_job
+        args:
+          job: ingest-smart-routing
+    - run_business_management:
+        call: run_job
+        args:
+          job: ingest-business-management
+    - run_settlement:
+        call: run_job
+        args:
+          job: ingest-settlement
     # TODO(transform): PARKED — only ingestion is promoted to the schedule
     # for now; dbt runs stay manual until the transform job is trusted on
     # prod raw. When un-parking, note the job name: `transform-aml` is
