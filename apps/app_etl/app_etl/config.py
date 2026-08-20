@@ -33,10 +33,27 @@ class Settings:
     gcp_project: str            # GCP project id (single dev project for now)
     bq_dataset_raw: str         # landing dataset in BQ, e.g. raw_litecore
 
+    # The dataset dbt builds into (staging views + marts). dbt reads this
+    # straight from the env in profiles.yml; the notify job is its second
+    # reader (queries the mart), which is why it lives here too.
+    bq_dataset_core: str = "core"
+
     # Raw landing bucket (dlt staging), e.g. lite-data-dev-raw. Required by
     # ingestion only — bq_pipeline() enforces it; the transform job leaves
     # it unset.
     gcs_bucket: str | None = None
+
+    # Report egress bucket (merchant-facing files), e.g. lite-data-dev-egress.
+    # Required by export jobs only — merchant_daily_report enforces it; every
+    # other job leaves it unset. Distinct from gcs_bucket: staging is
+    # platform-internal with a 7-day lifecycle rule, egress persists and is
+    # read by the delivery side.
+    gcs_bucket_egress: str | None = None
+
+    # Slack incoming-webhook URL for the daily summary — required by the
+    # notify job only, enforced there. Holder-can-post, so it's a secret:
+    # Secret Manager on Cloud Run, gitignored .env locally.
+    slack_webhook_url: str | None = None
 
     # Mode 1: Cloud SQL Auth Proxy on localhost, e.g. 127.0.0.1:5432
     pg_host: str | None = None
@@ -86,7 +103,10 @@ class Settings:
         return cls(
             gcp_project=os.environ["GCP_PROJECT"],
             bq_dataset_raw=os.environ.get("BQ_DATASET_RAW", "raw_litecore"),
+            bq_dataset_core=os.environ.get("BQ_DATASET_CORE", "core"),
             gcs_bucket=os.environ.get("GCS_BUCKET"),
+            gcs_bucket_egress=os.environ.get("GCS_BUCKET_EGRESS"),
+            slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL"),
             pg_host=pg_host,
             pg_port=int(os.environ.get("PG_PORT", "5432")),
             pg_user=os.environ["PG_USER"] if pg_host else None,
