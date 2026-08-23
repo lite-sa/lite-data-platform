@@ -135,6 +135,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pyarrow" },
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "sqlalchemy" },
 ]
 
@@ -148,6 +149,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pyarrow", specifier = ">=21" },
     { name = "python-dotenv", specifier = ">=1.1" },
+    { name = "requests", specifier = ">=2.32" },
     { name = "sqlalchemy", specifier = ">=2" },
 ]
 
