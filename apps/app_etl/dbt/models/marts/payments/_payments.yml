@@ -1,34 +1,277 @@
 version: 2
 
 models:
+  - name: payments
+    description: >
+      One row per payment — the metric-ready payment facts (nb 023's
+      build_payment_facts ported to SQL; supersedes the nb 018 phase-1
+      cut). Entry-mode classification across every pipeline, card facts
+      from instrument_data, the decision from the op log, 3DS and
+      routing milestone clocks, outcome + failure taxonomy
+      (decline_code_map seed), and the milestone funnel string. FULL
+      REBUILD from the staging views on every dbt build — not
+      incremental: every run restates all history from raw's latest
+      versions, so late ops and refunds are picked up automatically and
+      reruns are idempotent (the graduation path to incremental merge is
+      in the model header). Test merchants (seed: test_merchants) are
+      excluded. No PII — reads only the staging column allowlists.
+    columns:
+      - name: payment_id
+        description: Grain.
+        tests: [not_null, unique]
+      - name: merchant_id
+        tests: [not_null]
+      - name: merchant_name
+        description: >
+          A warn here is the drift detector for the business_id join
+          contract — nulls mean business_entities lost the merchant or
+          the snapshot ingestion is lagging a newly onboarded one.
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: created_at
+        description: >
+          Partition column (UTC). Filter on this one for partition
+          pruning — filters on created_at_local scan the whole table.
+      - name: status
+        description: >
+          Canonical status — source_status overridden to FAILED only for
+          stuck-PENDING declines (PENDING with failure ops and no
+          success op; the 8/11–15 POS incident population, a no-op for
+          receipts after the POS-622 source fix).
+        tests: [not_null]
+      - name: source_status
+        description: The payment FSM status exactly as at source.
+        tests: [not_null]
+      - name: outcome
+        description: >
+          The three-bucket partition every auth rate reads: authorized
+          (a decision-family success op exists ⇔ authorized_at), declined
+          (decision failure and never a success), no_decision (no
+          decision op — parked or abandoned). The partition and the
+          authorized ⇔ authorized_at equivalence are singular tests.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [authorized, declined, no_decision]
+      - name: currency
+        description: >
+          The new-currency tripwire: a warn here means a currency with no
+          agreed handling entered the data. Two decisions before adding
+          it to the list — is its ISO 4217 exponent covered by the
+          minor→major divisor (extend it for exp-3/exp-0), and how may
+          consumers that sum across currencies treat it.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [SAR]
+              config:
+                severity: warn
+      - name: channel
+        description: >
+          The pipeline that ran: channel_type where present (source
+          column since 2026-08-18), else the op witness — any op with a
+          terminal_id is pos, ops without one (or a threeds row) is
+          ecom; unknown when nothing witnesses either.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [pos, ecom, unknown]
+      - name: entry_mode
+        description: >
+          How the card reached LiteCore (entry-mode doc §1, first-match
+          waterfall within the ecom pipeline). Single 'pos' until
+          terminal_management is ingested. MOTO wins over payment_link —
+          a link carries a processing_type, and a link-delivered MOTO
+          payment is a MOTO payment (ruled 2026-08-24); prod MOTO
+          traffic today arrives via links.
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - pos
+                - ecom_card
+                - ecom_wallet
+                - payment_link
+                - moto
+                - stored_credential_cit
+                - stored_credential_mit
+                - unknown
+      - name: card_brand
+        description: >
+          From instrument_data (MADA / VISA / MASTERCARD / UNKNOWN).
+          NULL before the source column's backfill horizon (~2026-08-17)
+          and on payments that never got an instrument — brand splits
+          only mean something from then on.
+      - name: gateway
+        description: >
+          The connector that produced the decision — the success op's
+          connector, else the final failure's. NULL when no connector
+          ever answered. This replaced first_op_connector (first-routed
+          attribution) in the nb 023 port; routed_connector keeps the
+          routing decision.
+      - name: gateway_reached
+        description: >
+          The net-auth-rate flag: authorized, or declined at a stage
+          where the gateway/provider produced (or errored while
+          producing) a verdict. Net = authorized / (authorized +
+          declined-and-gateway_reached); everything upstream —
+          validation, risk, routing, 3DS, device errors, terminal
+          cancellations — drops out of the denominator.
+        tests: [not_null]
+      - name: failure_category
+        description: >
+          Per-pipeline decline category (nb 023 §7): the ecom reason
+          strings (risk/routing/3DS/gateway, 022 §5) with the
+          connector-null fallback, and the POS discriminators in doc
+          order (TMS reason / device error / receipt outcome / response
+          code). Set whenever a decision failure exists (failed_at) —
+          retried auths that later succeeded carry one too — and never
+          NULL when outcome = declined (singular test). Filter on
+          outcome = declined for decline analyses.
+      - name: failure_stage
+        description: >
+          failure_category collapsed to the shared stage vocabulary:
+          validation / risk / routing / threeds / gateway_declined /
+          gateway_error / device / cancelled. The lever map for product:
+          threeds losses are checkout work, gateway_declined is issuer
+          behaviour, risk and validation are our own gates.
+      - name: decline_reason
+        description: >
+          Mapped from failure_response_code via the decline_code_map
+          seed — the highest-volume codes only. NULL means unmapped (TSP
+          196 deliberately so), not absent.
+      - name: milestones
+        description: >
+          Witnessed milestones in canonical pipeline order, one
+          vocabulary across entry modes ("created -> routed -> 3ds ->
+          gateway_called -> authorized -> captured"). Token order is
+          fixed, not chronological; 'failed' is terminal-only (a decision
+          failure on a payment that also succeeded stays out).
+        tests: [not_null]
+      - name: captured_total
+        description: >
+          Minor units booked as captured — CAPTURE-family successes
+          (PURCHASE receipts normalized in), plus the ecom INSTANT
+          single-message fold (the AUTHORIZE books the funds, nb 017).
+          0 when nothing booked.
+        tests: [not_null]
+      - name: refunded_total
+        description: Minor units successfully refunded; 0 when none.
+        tests: [not_null]
+      - name: reversed_total
+        description: >
+          Minor units successfully reversed (POS REVERSE receipts);
+          0 when none.
+        tests: [not_null]
+      - name: threeds_authenticated
+        description: >
+          Protocol verdict transStatus in (Y, A) of the last 3DS attempt;
+          false includes has_threeds=false — filter on has_threeds for
+          3DS analyses. Agreement with the FSM is a singular test.
+
   - name: payments_daily_summary
     description: >
-      Merchant x run_date payment volume — counts and summed amount over
-      the last complete local day (run_date − 1). run_date-keyed
-      microbatch log (lookback 0), built from
-      int_payments__daily_activity. Never --full-refresh in prod. The
-      canonical starter mart: pure payment volume/status/channel facts,
-      no AML rule thresholds — future non-AML marts (acceptance, feature
-      store, …) follow this same shape.
+      Daily payment funnel — one row per payment_creation_date ×
+      merchant × channel × entry_mode × gateway × card_brand × currency
+      × payment_method, read from the payments fact (never staging/ops)
+      and fully restated with it every run. entry_mode and card_brand
+      joined the grain 2026-08-24 (nb 023 port); gateway switched from
+      first-routed to decision-connector attribution in the same pass.
+      authorized/declined/no_decision partition request_count and
+      sum(request_count) reconciles to the fact table's row count — both
+      singular tests, alongside the grain test. Amounts are major units
+      (NUMERIC) in the row's own currency.
     columns:
-      - name: run_date
-        description: Evaluation (activity) date, local. Partition key.
+      - name: payment_creation_date
+        description: >
+          The payment's created_at as a local calendar date
+          (var local_timezone) — the activity date, not a run date.
+          Partition key.
         tests: [not_null]
       - name: merchant_id
         tests: [not_null]
-      - name: payment_count
-        description: Distinct payments with at least one operation that day.
-        tests: [not_null]
-      - name: operation_count
-        description: Total operations that day (attempt-grained, not deduped by payment).
-        tests: [not_null]
-      - name: total_amount_minor
+      - name: merchant_name
         description: >
-          Summed amount_minor across operations and currencies (99.5% SAR
-          today — currency-mix policy is an open TODO, same as
-          aml_merchant_features).
-        tests: [not_null]
-      - name: evaluated_at
+          Denormalized from the fact table, same drift-detector warn as
+          there; a null groups as its own value but cannot fan out the
+          grain — merchant_id is in it.
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: [pos, ecom, unknown]
+      - name: entry_mode
         description: >
-          Wall-clock generation timestamp — diverges from run_date on
-          backfills/reruns, which is how you detect them.
+          The fact's entry_mode — the first slice of any auth-rate
+          story: pos, wallet, card and link decline for different
+          reasons and to different owners.
+        tests: [not_null]
+      - name: gateway
+        description: >
+          The fact's decision connector — the gateway that said the
+          final yes or no; not_routed when no connector ever answered.
+          (Until 2026-08-24 this column carried first_op_connector, the
+          first-routed attribution — dashboards comparing across that
+          date compare slightly different things on retried payments.)
+        tests: [not_null]
+      - name: card_brand
+        description: >
+          The fact's card_brand; unknown where NULL — which is all rows
+          before the instrument_data backfill horizon (~2026-08-17), so
+          filter the date range before reading brand splits.
+        tests: [not_null]
+      - name: currency
+        tests: [not_null]
+      - name: payment_method
+        description: unknown when the source left it null.
+        tests: [not_null]
+      - name: request_count
+        description: >
+          Payment attempts in the group; authorized_count +
+          declined_count + no_decision_count partitions it (singular
+          test).
+        tests: [not_null]
+      - name: authorized_count
+        description: Attempts with outcome authorized.
+      - name: declined_count
+        description: Attempts with outcome declined.
+      - name: no_decision_count
+        description: No decision op at all — never reached a verdict.
+      - name: gateway_declined_count
+        description: >
+          Declines where the gateway/provider actually decided
+          (gateway_reached) — the net-auth-rate denominator's decline
+          half: net = authorized / (authorized + gateway_declined).
+          Always ≤ declined_count.
+      - name: request_amount
+        description: >
+          Summed major-unit amount of all attempts. The null canary — a
+          null here means a source amount went null.
+        tests: [not_null]
+      - name: authorized_amount
+        description: Major-unit amount summed over authorized attempts only.
+      - name: declined_amount
+        description: >
+          Major-unit amount summed over declined attempts only. The
+          no_decision bucket's amount is the remainder (request_amount −
+          authorized_amount − declined_amount) — exact, since the three
+          buckets partition the rows.
+      - name: captured_amount
+        description: >
+          Booked funds summed (INSTANT AUTHORIZE fold), major units,
+          attributed to the payment's creation date — not the capture
+          day.
+      - name: refunded_amount
+        description: >
+          Refunds summed, major units, attributed to the payment's
+          creation date — not the refund day.
+      - name: reversed_amount
+        description: >
+          POS reversals summed, major units, same creation-date
+          attribution.

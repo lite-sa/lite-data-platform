@@ -61,12 +61,18 @@ from app_etl.config import Settings
 # calendar date, and "previous day" is a local-midnight question.
 LOCAL_TIMEZONE = "Asia/Riyadh"
 
-# The two merchants in scope (CEO ask, 2026-08-20 — same mids as
-# notebooks/020/021). Widening to all merchants is a deliberate decision
-# (refund posture, file-count, layout sign-off), not a config default.
+# The merchants in scope: the original two (CEO ask, 2026-08-20 — same
+# mids as notebooks/020/021) plus the 2026-08-24 KYB-approved batch.
+# Widening to all merchants is a deliberate decision (refund posture,
+# file-count, layout sign-off), not a config default.
 MERCHANT_IDS = [
     "6b58b5d3-d381-4bf0-bce3-812c812e11d5",  # fine table Company
     "afc004ce-20a0-4dd0-86c3-e9de6324590b",  # altawsil alashhal Company Ltd.
+    "e70d441e-678d-477c-840d-7eb486981369",  # bayt altawabil Company For Trading
+    "ae53c269-6258-4b96-8cbe-1f1c4fa87b13",  # alruyat almutamayiza Company For Meals
+    "4da9902e-baed-4eff-9743-d9cef5d29442",  # alquwa almuttalaqa Center Sport
+    "1dd2f1eb-e0ff-41f2-b56b-48b7434e07f2",  # J hub
+    "65de1bf8-20c2-4034-a42f-ef3ca04fb34d",  # Alatima Alraeia Company Ltd.
 ]
 
 GCS_PREFIX = "merchant-reports"

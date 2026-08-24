@@ -1,63 +1,153 @@
 """Payload-shape tests for the Slack daily summary. build_message() is
-pure (merchant × status rows in, Block Kit payload out), so this runs in
-CI with no BigQuery credentials — same posture as test_dbt_parse.py. The
-freshness guard's cutoff arithmetic is pure too and tested here.
+pure (mart rows + lifetime totals in, Block Kit payload out), so this
+runs in CI with no BigQuery credentials — same posture as
+test_dbt_parse.py. The freshness guard's cutoff arithmetic is pure too
+and tested here.
 """
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from app_etl.notify.daily_summary import build_message, day_end_utc
 
 ACTIVITY_DAY = date(2026, 8, 18)
+TO_DATE = {"authorized_count": 8_283, "authorized_amount": Decimal("1043210.55")}
 
 
-def _row(merchant_id, status, count, amount, name=None):
-    # One merchant × status aggregate, amounts in major units.
-    return {
+def _row(merchant_id, name=None, **overrides):
+    # One mart-grain aggregate (merchant × card_brand × channel),
+    # zero-filled like the mart's sums; dimensions default to the mart's
+    # null placeholders.
+    row = {
         "merchant_id": merchant_id,
         "merchant_name": name,
-        "status": status,
-        "payment_count": count,
-        "amount": amount,
+        "card_brand": "unknown",
+        "channel": "unknown",
+        "request_count": 0,
+        "authorized_count": 0,
+        "declined_count": 0,
+        "gateway_declined_count": 0,
+        "authorized_amount": 0,
     }
+    row.update(overrides)
+    return row
 
 
-def test_totals_buckets_rate_header_and_footer():
+def _tables(payload):
+    return [b for b in payload["blocks"] if b["type"] == "table"]
+
+
+def test_platform_breakdowns_rates_header_and_footer():
     rows = [
-        _row("aaaa1111-x", "CAPTURED", 90, 5_000, name="Kudu"),
-        _row("aaaa1111-x", "PARTIAL_CAPTURED", 10, 500, name="Kudu"),
-        _row("bbbb2222-x", "PENDING", 14, 300),
-        _row("bbbb2222-x", "FAILED", 10, 400),
-        _row("bbbb2222-x", "AUTHORIZATION_REVERSED", 1, 50),
+        _row(
+            "aaaa1111-x",
+            name="Kudu",
+            card_brand="MADA",
+            channel="pos",
+            request_count=60,
+            authorized_count=55,
+            declined_count=4,
+            gateway_declined_count=3,
+            authorized_amount=3_300,
+        ),
+        _row(
+            "aaaa1111-x",
+            name="Kudu",
+            card_brand="VISA",
+            channel="ecom",
+            request_count=30,
+            authorized_count=25,
+            declined_count=4,
+            gateway_declined_count=2,
+            authorized_amount=1_700,
+        ),
+        # A wholly-placeholder slice (10 undecided payments): hidden from
+        # every breakdown, still counted in the platform table.
+        _row("aaaa1111-x", name="Kudu", request_count=10),
+        _row(
+            "bbbb2222-x",
+            card_brand="MADA",
+            channel="pos",
+            request_count=25,
+            authorized_count=10,
+            declined_count=10,
+            gateway_declined_count=4,
+            authorized_amount=555,
+        ),
     ]
-    payload = build_message(rows, ACTIVITY_DAY)
+    payload = build_message(rows, ACTIVITY_DAY, TO_DATE)
     text = str(payload)
 
     # Header format is fixed by review: plain hyphen, never an em dash.
     assert "Payments Daily Summary - Tue 18 Aug 2026" in text
     assert "—" not in payload["blocks"][0]["text"]["text"]
-    # Totals: 125 payments / SAR 6,250.00 across ALL statuses (the
-    # reversed payment counts in Total only); Authorized folds the
-    # capture-side statuses: 100 payments / SAR 5,500.00.
+    # Four tables: platform, two breakdowns, top merchants.
+    assert len(_tables(payload)) == 4
+    # Platform row counts EVERYTHING, hidden placeholder rows included:
+    # 125 payments = 90 authorized + 18 declined + 17 undecided; net
+    # attempts 99 = 90 + 9 gateway-reached declines; gross 90/108, net
+    # 90/99. The no_decision column itself is gone from display.
     assert "125" in payload["text"]
-    assert "SAR 6,250.00" in text
-    assert "SAR 5,500.00" in text
-    assert "Authorized" in text
-    # Gross authorization rate = Authorized / Total = 100/125.
-    assert "Gross authorization rate" in text
-    assert "80.0%" in text
-    # Exactly the three bucket rows — no per-status rows any more.
-    assert "Captured" not in text
-    assert "Authorization reversed" not in text
-    # Funnel and top merchants render as native Block Kit table blocks.
-    assert sum(b["type"] == "table" for b in payload["blocks"]) == 2
-    # Top merchants ranked by capture-side volume (5,500 > 0; the
-    # reversed 50 doesn't count); named when raw has a name, truncated
-    # id otherwise.
+    platform_cells = str(_tables(payload)[0])
+    assert "'125'" in platform_cells
+    assert "'99'" in platform_cells
+    assert "83.3%" in platform_cells
+    assert "90.9%" in platform_cells
+    assert "No decision" not in text
+    # Lifetime line, straight from the totals row.
+    assert "Authorized to date" in text
+    assert "8,283" in text
+    assert "SAR 1,043,210.55" in text
+    # Breakdowns: card brand and channel only, placeholder rows hidden,
+    # sorted largest first.
+    assert "By card brand" in text
+    assert "By channel" in text
+    assert "By processing type" not in text
+    assert "By gateway" not in text
+    breakdown_text = str(_tables(payload)[1:3])
+    assert "unknown" not in breakdown_text
+    assert "not_routed" not in breakdown_text
+    assert text.index("MADA") < text.index("VISA")
+    assert text.index("pos") < text.index("ecom")
+    # Slice arithmetic spot-check: VISA (= ecom, one row) — gross 25/29,
+    # net 25/27.
+    assert "86.2%" in text
+    assert "92.6%" in text
+    # Top merchants ranked by authorized volume, named when the mart has
+    # a name, truncated id otherwise; counts + rates per merchant (Kudu:
+    # 100 payments, 8 declined, net attempts 85, gross 80/88, net 80/85)
+    # and avg txn = authorized volume / authorized count (5000/80).
     assert text.index("Kudu") < text.index("bbbb2222")
     assert "bbbb2222-x" not in text
-    # Footer says only what the data is built on.
-    assert "Built on payments created 2026-08-18" in text
+    top_cells = str(_tables(payload)[3])
+    assert "'85'" in top_cells
+    assert "94.1%" in top_cells
+    assert "5,000.00" in top_cells
+    assert "62.50" in top_cells
+    assert "55.50" in top_cells
+    # Fallback text carries the day's authorized volume (5000 + 555).
+    assert "SAR 5,555.00" in payload["text"]
+    # Footer is the four agreed bullets.
+    assert "• Built on payments created 2026-08-18 (Asia/Riyadh)" in text
+    assert "• Gross auth rate = authorized / total number of payments" in text
+    assert "• Net auth rate = authorized / net attempts (gateway reached)" in text
+    assert "• Decline failure reason breakdown coming soon ⏳" in text
+
+
+def test_placeholder_only_rows_drop_breakdown_sections_and_rates_read_na():
+    # A day where nothing was decided and no dimension is known: the
+    # breakdown sections disappear entirely (never render empty tables),
+    # and gross/net have no denominator — n/a, never a fake 0%.
+    rows = [_row("cccc3333-x", request_count=4)]
+    payload = build_message(
+        rows, ACTIVITY_DAY, {"authorized_count": 0, "authorized_amount": 0}
+    )
+    text = str(payload)
+
+    assert len(_tables(payload)) == 2  # platform + top merchants only
+    assert "By card brand" not in text
+    assert "By channel" not in text
+    assert "gross n/a, net n/a" in payload["text"]
 
 
 def test_day_end_utc_is_riyadh_midnight():

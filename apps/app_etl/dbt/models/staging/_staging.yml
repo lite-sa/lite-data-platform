@@ -5,7 +5,10 @@ models:
     description: >
       Latest version per payment (raw appends one row per source-row
       version). The unique test below is the dedup contract — if it
-      fails, the qualify clause or the raw grain regressed.
+      fails, the qualify clause or the raw grain regressed. Exposes the
+      scalar card facts (card_brand, instrument_type, card_last_four,
+      future_usage) extracted from instrument_data; the blob itself
+      never leaves this view.
     columns:
       - name: payment_id
         tests: [not_null, unique]
@@ -13,7 +16,43 @@ models:
   - name: stg_litecore__payment_operations
     description: >
       Latest version per payment operation, plus local wall-clock
-      timestamps for time-of-day rules.
+      timestamps for time-of-day rules. The POS receipt scalars
+      (external_operation_type, verification_method,
+      reconciliation_status, frontend_error, receipt_outcome) are
+      extracted from the metadata JSONB here; the blob — raw provider
+      payloads — never leaves this view.
     columns:
       - name: payment_operation_id
+        tests: [not_null, unique]
+
+  - name: stg_litecore__routing_evaluations
+    description: >
+      Latest version per smart-routing evaluation (grain:
+      routing_evaluation_id — one COMPLETED row per authorize in the
+      happy path plus retries; readers pick the first per payment).
+      operation_type is stored lowercase and routing_obj keys are
+      snake_case — both prod-verified (nb 022/023) and baked into the
+      extraction.
+    columns:
+      - name: routing_evaluation_id
+        tests: [not_null, unique]
+
+  - name: stg_litecore__threeds
+    description: >
+      Latest version per 3DS authentication attempt (grain: threeds_id —
+      a payment can have several attempts; readers dedup per payment).
+      Strict PII allowlist: the shopper JSONB and EMV 3DS artifacts never
+      pass this view. ''-vs-NULL source mixing normalized to NULL.
+    columns:
+      - name: threeds_id
+        tests: [not_null, unique]
+
+  - name: stg_litecore__business_entities
+    description: >
+      Latest version per merchant, keyed by business_id (what
+      payments.merchant_id references). Two-column allowlist — the
+      display name only; the rest of the registry profile stays behind
+      raw IAM.
+    columns:
+      - name: merchant_id
         tests: [not_null, unique]

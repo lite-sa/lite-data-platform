@@ -17,3 +17,20 @@ sources:
         description: >
           Append-only operation log (authorize/capture/refund/…) per
           payment; owns terminal_id, operation_type, POS fields.
+      - name: payment_v2__threeds
+        description: >
+          EMV 3DS authentication attempts. payment_id -> payments.id but
+          nullable (an auth can exist before/without its payment) and
+          retry-capable — readers dedup per payment. PII-dense: staging
+          exposes a strict allowlist (docs/schema-management.md §1).
+      - name: business_management__business_entities
+        description: >
+          Merchant registry, `replace` disposition — latest state only,
+          no version history yet. business_id (not id, the source PK) is
+          what payments.merchant_id references.
+      - name: smart_routing__transaction_evaluation
+        description: >
+          One row per smart-routing evaluation; payment_id -> payments.id.
+          Ecom pipeline only — POS payments never route. The routing
+          decision lives in the routing_obj JSON, matched rules in
+          matched_rules.

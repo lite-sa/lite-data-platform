@@ -1,0 +1,28 @@
+connector_response_code,decline_reason,note
+100,do_not_honor,ISO 8583:1993 action code (TSP/mada) — assumed not confirmed by NearPay docs
+101,expired_card,ISO 8583:1993 action code
+104,restricted_card,ISO 8583:1993 action code
+106,pin_tries_exceeded,ISO 8583:1993 action code
+110,invalid_amount,ISO 8583:1993 action code
+116,insufficient_funds,ISO 8583:1993 action code — the highest-volume decline on prod
+117,incorrect_pin,ISO 8583:1993 action code
+118,no_card_record,ISO 8583:1993 action code
+119,txn_not_permitted_to_cardholder,ISO 8583:1993 action code
+121,exceeds_amount_limit,ISO 8583:1993 action code
+123,exceeds_frequency_limit,ISO 8583:1993 action code
+125,card_not_effective,ISO 8583:1993 action code
+129,suspected_counterfeit_card,ISO 8583:1993 action code
+907,issuer_inoperative,ISO 8583:1993 action code
+909,system_malfunction,ISO 8583:1993 action code
+911,issuer_timeout,ISO 8583:1993 action code
+912,issuer_unavailable,ISO 8583:1993 action code
+913,duplicate_transaction,ISO 8583:1993 action code
+INSUFFICIENT_FUNDS,insufficient_funds,mpgs gatewayCode
+EXPIRED_CARD,expired_card,mpgs gatewayCode
+REFERRED,refer_to_issuer,mpgs gatewayCode
+DECLINED,issuer_declined_generic,mpgs gatewayCode — the response message carries the detail
+BLOCKED,blocked_by_gateway,mpgs gatewayCode — MPGS-side block not an issuer decline
+ERROR,gateway_technical_error,mpgs gatewayCode
+TIMED_OUT,issuer_timeout,mpgs gatewayCode
+UNSPECIFIED_FAILURE,gateway_technical_error,mpgs gatewayCode
+INVALID_REQUEST,invalid_request,mpgs gatewayCode — integration bug not a shopper decline

@@ -79,7 +79,11 @@ def refresh_mode(argv: list[str] | None = None) -> TRefreshMode | None:
     from EPOCH. (Dropping only the BQ table would leave the watermark
     behind and silently skip history.) A CLI arg rather than an env var so
     it can't linger in a `.env` or Cloud Run job config — pass it per
-    execution, e.g. `gcloud run jobs execute ... --args=--refresh`. Needed
+    execution. Cloud Run's `--args` replaces the job's whole args array
+    (module invocation included — jobs set command=python,
+    args=[-m, app_etl.ingestion.<db>]), so repeat the full list:
+    `gcloud run jobs execute ingest-<db>
+    --args="-m,app_etl.ingestion.<db>,--refresh"`. Needed
     whenever a create-time-only BigQuery property (partitioning,
     clustering) changes on an existing table.
     """

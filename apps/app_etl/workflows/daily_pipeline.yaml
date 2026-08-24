@@ -1,19 +1,30 @@
-# Daily pipeline DAG: extraction (sequential, one Cloud Run Job per
-# source database) -> dbt build (PARKED, see below). One Cloud Scheduler
-# trigger executes this workflow daily instead of staggered per-job
-# schedules guessing each other's runtimes.
+# Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
+# database) -> transform + export (parallel: dbt build writing core,
+# merchant report export reading raw). One Cloud Scheduler trigger
+# executes this workflow daily instead of staggered per-job schedules
+# guessing each other's runtimes.
 #
-# Sequential, not parallel, since 2026-08-17. The parallel version hit
-# random terminal load failures ("matched no files" on a staged
-# _dlt_pipeline_state parquet): every pipeline stages under the same GCS
-# prefix and loads the same dataset, the dlt system tables share a name
-# across pipelines, and dlt truncates a table's staging folder before
-# loading it — so one pipeline's truncate could delete a sibling's
-# just-staged state file mid-load. The staging prefix is now namespaced
-# per pipeline (utils/dlt_helpers.py::bq_pipeline), which removes the
-# collision even for overlapping manual runs; sequential is kept anyway —
-# it also serializes extraction load on the source replica, and at one
-# execution/day the wall-clock cost is irrelevant.
+# The Slack daily summary (notify-daily-summary) is deliberately NOT in
+# this DAG (2026-08-24): it fires from its own Cloud Scheduler trigger
+# later in the morning, so a failed export can never keep the metrics
+# from posting. The decoupling is safe because the job self-guards: it
+# refuses to post unless raw covered the activity day AND the
+# payments_daily_summary mart was rebuilt at/after that covering load —
+# that is, unless this workflow's transform stage already ran. Schedule
+# it with a generous buffer after this workflow's trigger: a too-early
+# fire fails loudly and nothing retries it later that day.
+#
+# Parallel extraction again since 2026-08-18. The 2026-08-17 switch to
+# sequential worked around random terminal load failures ("matched no
+# files" on a staged _dlt_pipeline_state parquet): every pipeline staged
+# under the same GCS prefix and loads the same dataset, the dlt system
+# tables share a name across pipelines, and dlt truncates a table's
+# staging folder before loading it — so one pipeline's truncate could
+# delete a sibling's just-staged state file mid-load. The staging prefix
+# is now namespaced per pipeline (utils/dlt_helpers.py::bq_pipeline),
+# which removes the collision even for overlapping manual runs, so
+# extraction fans out again. The source replica now takes the five
+# extracts concurrently — accepted at current volumes.
 #
 # Deploy (user-run, tracked in docs/lite-data-prod-provisioning.md Phase 5):
 #   gcloud workflows deploy litecore-daily \
@@ -21,44 +32,73 @@
 #     --location=me-central2 \
 #     --service-account=<SA with run.invoker on the jobs below + run.viewer>
 #
-# A failed job fails its connector call and the whole execution; the
-# remaining jobs are skipped that day. Reruns are safe: every pipeline is
-# watermarked (incremental) or full-extract (snapshot), so the next
-# successful run catches up. No retry policy in v1: a rerun is a manual
-# `gcloud workflows run litecore-daily --location=me-central2` after
-# fixing the cause.
+# A failed job fails its connector call, which fails its branch and the
+# whole execution — sibling branches are cancelled, but a Cloud Run
+# execution already started by a cancelled branch runs to completion on
+# its own (so an export failure does not abort a running dbt build, and
+# the later metrics post still finds a fresh mart). Reruns are safe
+# either way: every pipeline is watermarked (incremental) or
+# full-extract (snapshot), dbt fully restates what it builds, and the
+# export overwrites its files. No retry policy in v1: a rerun is a
+# manual `gcloud workflows run litecore-daily --location=me-central2`
+# after fixing the cause.
 
 main:
   steps:
-    - run_payment_v2:
-        call: run_job
-        args:
-          job: ingest-payment-v2
-    - run_ledger:
-        call: run_job
-        args:
-          job: ingest-ledger
-    - run_smart_routing:
-        call: run_job
-        args:
-          job: ingest-smart-routing
-    - run_business_management:
-        call: run_job
-        args:
-          job: ingest-business-management
-    - run_settlement:
-        call: run_job
-        args:
-          job: ingest-settlement
-    # TODO(transform): PARKED — only ingestion is promoted to the schedule
-    # for now; dbt runs stay manual until the transform job is trusted on
-    # prod raw. When un-parking, note the job name: `transform-aml` is
-    # stale — rename job + this reference to `transform-dbt` in the same
-    # change (see lite-data-prod-provisioning.md Phase 4 note).
-    # - transform:
-    #     call: run_job
-    #     args:
-    #       job: transform-aml
+    - extract:
+        parallel:
+          branches:
+            - payment_v2:
+                steps:
+                  - run_payment_v2:
+                      call: run_job
+                      args:
+                        job: ingest-payment-v2
+            - ledger:
+                steps:
+                  - run_ledger:
+                      call: run_job
+                      args:
+                        job: ingest-ledger
+            - smart_routing:
+                steps:
+                  - run_smart_routing:
+                      call: run_job
+                      args:
+                        job: ingest-smart-routing
+            - business_management:
+                steps:
+                  - run_business_management:
+                      call: run_job
+                      args:
+                        job: ingest-business-management
+            - settlement:
+                steps:
+                  - run_settlement:
+                      call: run_job
+                      args:
+                        job: ingest-settlement
+    # Both branches run only after every ingest branch succeeded — dbt
+    # never builds on a partial extract — and are independent of each
+    # other (dbt reads raw and writes core; the export reads raw and
+    # writes the reports bucket), so they fan out. Both are FATAL: a
+    # broken build or a merchant deliverable that didn't ship must fail
+    # the execution, which is today's only alert signal.
+    - transform_and_export:
+        parallel:
+          branches:
+            - transform:
+                steps:
+                  - run_transform:
+                      call: run_job
+                      args:
+                        job: transform-dbt
+            - export:
+                steps:
+                  - run_export:
+                      call: run_job
+                      args:
+                        job: export-merchant-daily
 
 # Run one Cloud Run Job and block until its execution finishes; a failed
 # execution raises and fails the workflow. Region is pinned to me-central2
