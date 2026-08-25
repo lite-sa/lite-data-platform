@@ -6,11 +6,13 @@ notify-job test).
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from app_etl.export.merchant_daily_report import (
+    EXCLUDED_PAYMENT_IDS,
     _empty_settlement,
     build_report,
     dedupe_settlement,
@@ -149,3 +151,13 @@ def test_write_daily_files_one_per_merchant_including_empty(tmp_path):
     assert len(m2) == 0
     assert "settlement_transaction_id" in m2.columns
     assert "fee_total_sar" in m2.columns
+
+
+def test_excluded_payment_ids_match_dbt_seed():
+    # The canonical exclusion list is the dbt seed; the export carries a
+    # copy because its query runs in parallel with dbt build and cannot
+    # depend on the seed table existing. This is the lockstep guard.
+    seed = pd.read_csv(
+        Path(__file__).parents[1] / "dbt" / "seeds" / "incident_excluded_payments.csv"
+    )
+    assert sorted(seed["payment_id"]) == sorted(EXCLUDED_PAYMENT_IDS)

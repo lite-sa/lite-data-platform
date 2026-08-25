@@ -75,6 +75,26 @@ MERCHANT_IDS = [
     "65de1bf8-20c2-4034-a42f-ef3ca04fb34d",  # Alatima Alraeia Company Ltd.
 ]
 
+# Payments hand-deleted or ledger-reversed upstream during incident
+# remediation (first case: inc-2026-08-24-duplicate-webhooks). Append-only
+# raw never sees a source DELETE, so without this filter the rows resurface
+# in merchant files — the reversed 60 SAR capture shipped in alquwa
+# almuttalaqa's 2026-08-24 file exactly this way. Canonical list is the
+# dbt seed incident_excluded_payments.csv; a parity test keeps this copy
+# in lockstep (the export reads raw directly, and the DAG runs it in
+# parallel with dbt build, so it cannot depend on the seed table).
+EXCLUDED_PAYMENT_IDS = [
+    "d565fbdc-e26a-458a-9cc2-b84b81e031c3",
+    "92d01a69-3c74-4b80-87a8-5250f5abb7ad",
+    "6b0f20bb-5176-4d04-8745-d4f639ec2675",
+    "aeca7623-7224-4221-b02f-ba6164ec0275",
+    "aa6c4bf8-48e0-4b39-8466-d8a1bbc26e3d",
+    "84e62d43-85e5-45a4-a36b-c224127a3724",
+    "5bd8ba25-72b0-4724-ac3a-d12a2dc43830",
+    "170e25c6-1072-42b2-a7e1-a42957d32717",
+    "ac07fcb0-136a-4be0-a50b-8392481fe702",
+]
+
 GCS_PREFIX = "merchant-reports"
 REPORT_TYPE = "daily_transactions"
 
@@ -108,6 +128,7 @@ def fetch_payments(
 ) -> pd.DataFrame:
     """The day's payments for the in-scope merchants, latest version per id
     (the dedup a stg_ model would own), with the merchant's display name.
+    Incident-excluded payments (EXCLUDED_PAYMENT_IDS) never enter the spine.
     """
     query = f"""
         select p.* except (_dlt_load_id, _dlt_id), b.name as merchant_name
@@ -126,11 +147,15 @@ def fetch_payments(
             ) = 1
         ) b on b.business_id = p.merchant_id
         where p.merchant_id in unnest(@merchant_ids)
+          and p.id not in unnest(@excluded_payment_ids)
           and date(datetime(p.created_at, @tz)) = @report_day
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("merchant_ids", "STRING", MERCHANT_IDS),
+            bigquery.ArrayQueryParameter(
+                "excluded_payment_ids", "STRING", EXCLUDED_PAYMENT_IDS
+            ),
             bigquery.ScalarQueryParameter("tz", "STRING", LOCAL_TIMEZONE),
             bigquery.ScalarQueryParameter("report_day", "DATE", report_day),
         ]
@@ -143,7 +168,10 @@ def fetch_settlement(
 ) -> pd.DataFrame:
     """Settlement transactions for the day's payments, window context joined
     in (all window statuses — on a payment row this is "where does
-    settlement stand", not a payout statement).
+    settlement stand", not a payout statement). REMOVED transactions are
+    excluded here, after the latest-version dedup, so a txn whose latest
+    version is REMOVED disappears instead of resurfacing an older version;
+    its payment then reports "no settlement" (NaN columns).
     """
     query = f"""
         select
@@ -164,6 +192,8 @@ def fetch_settlement(
             ) = 1
         ) w on w.id = t.settlement_window_id
         where t.parent_payment_id in unnest(@payment_ids)
+          -- `is distinct from`, not `!=`: a NULL status must stay in scope.
+          and t.status is distinct from 'REMOVED'
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[

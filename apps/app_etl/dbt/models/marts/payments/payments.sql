@@ -26,7 +26,11 @@
 -- that design, so graduation changes only this config block + one CTE.
 --
 -- Grain: payment_id, tested unique. Test merchants are EXCLUDED via the
--- test_merchants seed — the one place their ids live in dbt.
+-- test_merchants seed — the one place their ids live in dbt. Payments
+-- hand-deleted or ledger-reversed upstream during incident remediation
+-- are EXCLUDED via the incident_excluded_payments seed: append-only raw
+-- never sees a source DELETE, so without the seed those rows would stay
+-- in the fact forever (first case: inc-2026-08-24-duplicate-webhooks).
 -- PII: none — reads only the stg_ column allowlists, never raw. Adding a
 -- column here means adding it to a staging view first, where the PII
 -- boundary is enforced.
@@ -43,6 +47,10 @@
 with
 
     test_merchants as (select merchant_id from {{ ref('test_merchants') }}),
+
+    incident_exclusions as (
+        select payment_id from {{ ref('incident_excluded_payments') }}
+    ),
 
     spine as (
 
@@ -76,7 +84,8 @@ with
             pay.updated_at as source_updated_at
         from {{ ref('stg_litecore__payments') }} as pay
         left join test_merchants as tm on pay.merchant_id = tm.merchant_id
-        where tm.merchant_id is null
+        left join incident_exclusions as ix on pay.payment_id = ix.payment_id
+        where tm.merchant_id is null and ix.payment_id is null
 
     ),
 

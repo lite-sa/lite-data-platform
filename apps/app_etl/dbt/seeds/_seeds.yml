@@ -13,6 +13,32 @@ seeds:
       - name: merchant_id
         tests: [not_null, unique]
 
+  - name: incident_excluded_payments
+    description: >
+      Payments hand-deleted or ledger-reversed upstream during incident remediation.
+      Append-only raw never sees a source DELETE (and ledger reversals live only in
+      the ledger database), so these rows would otherwise stay in the fact forever.
+      The payments mart anti-joins this seed on payment_id; the merchant report
+      export mirrors the list as EXCLUDED_PAYMENT_IDS (parity-tested in
+      tests/test_merchant_daily_report.py). Append-only: add rows per incident,
+      never remove them — the raw rows they mask are permanent.
+    config:
+      column_types:
+        payment_id: string
+        incident: string
+        reason: string
+        note: string
+    columns:
+      - name: payment_id
+        tests: [not_null, unique]
+      - name: incident
+        tests: [not_null]
+      - name: reason
+        tests:
+          - not_null
+          - accepted_values:
+              values: [deleted_in_source, reversed_in_ledger]
+
   - name: decline_code_map
     description: >
       connector_response_code → human decline_reason, the highest-volume

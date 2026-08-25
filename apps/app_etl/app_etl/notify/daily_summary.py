@@ -7,19 +7,28 @@ iterated). Test merchants are already excluded and merchant names
 already denormalized in the fact; this job aggregates and formats,
 nothing more.
 
-Message layout (settled with the user 2026-08-24):
-- Platform rate table for the activity day: payments / authorized /
-  declined / net attempts / gross / net. The no_decision column was
-  dropped from display (zero on a normal day); its payments still count
-  in the Payments column and the gross denominator per the formulas
-  below.
-- Authorized-to-date line: lifetime platform authorized count + volume,
-  summed over the whole mart.
-- Breakdowns by card_brand and by channel, same columns with a leading
-  label. Rows whose dimension is a null placeholder (unknown /
-  not_routed / the source's own UNKNOWN) are hidden — they still count
-  in the platform table, so hidden rows show up there as the gap. A
-  breakdown left empty by that rule drops its section entirely.
+Message layout (headline-first rework settled 2026-08-25; the rate
+columns and the hiding rule date to the 2026-08-24 layout):
+- Headline numbers: the lifetime authorized-to-date line (count +
+  volume, summed over the whole mart), then a month-to-date table —
+  the 1st of the activity day's month through the activity day, never
+  the partial current day the mart also holds — of authorized count /
+  volume / avg txn by channel, with a Total row. Placeholder channels
+  are hidden as rows but still counted in the Total.
+- By channel, for the activity day: the rate columns (payments /
+  authorized / declined / net attempts / gross / net) plus authorized
+  volume and avg txn.
+- Platform rate table for the activity day: the rate columns over
+  everything, hidden breakdown rows included. The no_decision column
+  stays dropped from display (zero on a normal day); its payments
+  still count in the Payments column and the gross denominator per the
+  formulas below.
+- By card brand: the rate columns only.
+- Hiding rule (both breakdowns): rows whose dimension is a null
+  placeholder (unknown / not_routed / the source's own UNKNOWN) are
+  hidden — they still count in the platform table, so hidden rows show
+  up there as the gap. A breakdown left empty by that rule drops its
+  section entirely.
 - Top merchants by authorized volume, with the same counts and rates
   plus authorized volume and avg txn (= authorized volume / authorized
   count, blank when a listed merchant authorized nothing).
@@ -84,11 +93,6 @@ LOCAL_TIMEZONE = "Asia/Riyadh"
 
 MART_TABLE = "payments_daily_summary"
 
-# The breakdown slices, in message order: section title × mart column.
-BREAKDOWNS = (
-    ("By card brand", "card_brand"),
-    ("By channel", "channel"),
-)
 # The mart's null placeholders ('unknown', 'not_routed') and the
 # source's own UNKNOWN, compared casefolded — hidden from breakdowns,
 # still counted in the platform table.
@@ -146,6 +150,34 @@ def fetch_platform_totals(client: bigquery.Client, core: str) -> dict[str, Any]:
         from `{core}.{MART_TABLE}`
     """
     return dict(list(client.query_and_wait(query))[0])
+
+
+def fetch_month_authorized_by_channel(
+    client: bigquery.Client, core: str, activity_day: date
+) -> list[dict[str, Any]]:
+    """Authorized count + volume per channel, calendar month to date —
+    the 1st through the activity day. The upper bound matters: the mart
+    also holds a partial row-set for the current day (raw extracts past
+    local midnight), which must not leak into headline numbers.
+    """
+    query = f"""
+        select
+            channel,
+            sum(authorized_count) as authorized_count,
+            sum(authorized_amount) as authorized_amount
+        from `{core}.{MART_TABLE}`
+        where payment_creation_date between @month_start and @activity_day
+        group by channel
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter(
+                "month_start", "DATE", activity_day.replace(day=1)
+            ),
+            bigquery.ScalarQueryParameter("activity_day", "DATE", activity_day),
+        ]
+    )
+    return [dict(row) for row in client.query_and_wait(query, job_config=job_config)]
 
 
 def fetch_first_covering_load(
@@ -246,7 +278,8 @@ def _section(text: str) -> dict[str, Any]:
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """nb 023 §8's rate_table row over any subset of mart rows: gross
     over the decided, net over net attempts (= authorized +
-    gateway_declined, the gateway_reached population).
+    gateway_declined, the gateway_reached population), plus authorized
+    volume and avg txn (None when nothing authorized — never a fake 0).
     """
     m = {
         key: sum(r[key] for r in rows)
@@ -257,13 +290,29 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "gateway_declined_count",
         )
     }
+    m["authorized_amount"] = sum(
+        (Decimal(r["authorized_amount"]) for r in rows), Decimal(0)
+    )
     m["net_attempts"] = m["authorized_count"] + m["gateway_declined_count"]
     decided = m["authorized_count"] + m["declined_count"]
     m["gross_auth_rate"] = m["authorized_count"] / decided if decided else None
     m["net_auth_rate"] = (
         m["authorized_count"] / m["net_attempts"] if m["net_attempts"] else None
     )
+    m["avg_authorized_amount"] = (
+        m["authorized_amount"] / m["authorized_count"]
+        if m["authorized_count"]
+        else None
+    )
     return m
+
+
+def _avg_cell(m: dict[str, Any]) -> str:
+    return (
+        f"{m['avg_authorized_amount']:,.2f}"
+        if m["avg_authorized_amount"] is not None
+        else ""
+    )
 
 
 def _metric_cells(m: dict[str, Any]) -> tuple[str, ...]:
@@ -278,22 +327,35 @@ def _metric_cells(m: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _rate_table(
-    groups: list[tuple[str, dict[str, Any]]], label_header: str | None = None
+    groups: list[tuple[str, dict[str, Any]]],
+    label_header: str | None = None,
+    with_volume: bool = False,
 ) -> dict[str, Any]:
     """One rate table. With label_header, the first column names each
-    group (a breakdown); without, a single all-platform row.
+    group (a breakdown); without, a single all-platform row. With
+    with_volume, authorized volume + avg txn columns follow the rates.
     """
     right = {"align": "right"}
+    headers = _METRIC_HEADERS + (
+        ("Auth (SAR)", "Avg txn (SAR)") if with_volume else ()
+    )
+
+    def cells(m: dict[str, Any]) -> tuple[str, ...]:
+        base = _metric_cells(m)
+        if with_volume:
+            base += (f"{m['authorized_amount']:,.2f}", _avg_cell(m))
+        return base
+
     if label_header is None:
         return _table(
-            [_metric_cells(m) for _, m in groups],
-            [right] * len(_METRIC_HEADERS),
-            header=_METRIC_HEADERS,
+            [cells(m) for _, m in groups],
+            [right] * len(headers),
+            header=headers,
         )
     return _table(
-        [(label, *_metric_cells(m)) for label, m in groups],
-        [{"align": "left", "is_wrapped": True}] + [right] * len(_METRIC_HEADERS),
-        header=(label_header, *_METRIC_HEADERS),
+        [(label, *cells(m)) for label, m in groups],
+        [{"align": "left", "is_wrapped": True}] + [right] * len(headers),
+        header=(label_header, *headers),
     )
 
 
@@ -314,17 +376,61 @@ def _breakdown(
     return sorted(kept, key=lambda g: g[1]["request_count"], reverse=True)
 
 
+def _month_table(
+    month_rows: list[dict[str, Any]], activity_day: date
+) -> dict[str, Any]:
+    """The headline month-to-date table: authorized count / volume / avg
+    txn by channel, largest volume first, plus a Total row. Placeholder
+    channels are hidden as rows but counted in the Total, same rule as
+    the breakdowns; the first column header names the month.
+    """
+
+    def cells(label: str, count: int, amount: Decimal) -> tuple[str, ...]:
+        return (
+            label,
+            f"{count:,}",
+            f"{amount:,.2f}",
+            f"{amount / count:,.2f}" if count else "",
+        )
+
+    kept = sorted(
+        (
+            r
+            for r in month_rows
+            if r["channel"] and r["channel"].casefold() not in _NULL_DIMENSION_LABELS
+        ),
+        key=lambda r: Decimal(r["authorized_amount"]),
+        reverse=True,
+    )
+    body = [
+        cells(r["channel"], r["authorized_count"], Decimal(r["authorized_amount"]))
+        for r in kept
+    ]
+    body.append(
+        cells(
+            "Total",
+            sum(r["authorized_count"] for r in month_rows),
+            sum((Decimal(r["authorized_amount"]) for r in month_rows), Decimal(0)),
+        )
+    )
+    return _table(
+        body,
+        [{"align": "left", "is_wrapped": True}] + [{"align": "right"}] * 3,
+        header=(f"{activity_day:%b %Y}", "Authorized", "Auth (SAR)", "Avg txn (SAR)"),
+    )
+
+
 def build_message(
     rows: list[dict[str, Any]],
     activity_day: date,
     platform_totals: dict[str, Any],
+    month_by_channel: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Pure: mart rows (merchant × card_brand × channel) plus the
-    lifetime totals in, Slack payload out — this is what the unit test
-    covers, no BigQuery involved.
+    """Pure: mart rows (merchant × card_brand × channel), the lifetime
+    totals, and the month-to-date channel rows in, Slack payload out —
+    this is what the unit test covers, no BigQuery involved.
     """
     platform = _metrics(rows)
-    authorized_amount = sum(Decimal(r["authorized_amount"]) for r in rows)
 
     per_merchant: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -333,7 +439,6 @@ def build_message(
         {
             "merchant_id": merchant_id,
             "merchant_name": group[0]["merchant_name"],
-            "authorized_amount": sum(Decimal(r["authorized_amount"]) for r in group),
             **_metrics(group),
         }
         for merchant_id, group in per_merchant.items()
@@ -352,11 +457,7 @@ def build_message(
                 _pct(m["gross_auth_rate"]),
                 _pct(m["net_auth_rate"]),
                 f"{m['authorized_amount']:,.2f}",
-                (
-                    f"{m['authorized_amount'] / m['authorized_count']:,.2f}"
-                    if m["authorized_count"]
-                    else ""
-                ),
+                _avg_cell(m),
             )
             for i, m in enumerate(top[:TOP_MERCHANTS], start=1)
         ],
@@ -391,14 +492,21 @@ def build_message(
 
     blocks: list[dict[str, Any]] = [
         {"type": "header", "text": {"type": "plain_text", "text": header}},
-        _rate_table([("all", platform)]),
+        _section("*Headline numbers*"),
         _section(to_date),
     ]
-    for title, dimension in BREAKDOWNS:
-        groups = _breakdown(rows, dimension)
-        if groups:
-            blocks.append(_section(f"*{title}*"))
-            blocks.append(_rate_table(groups, label_header=""))
+    if month_by_channel:
+        blocks.append(_month_table(month_by_channel, activity_day))
+    channel_groups = _breakdown(rows, "channel")
+    if channel_groups:
+        blocks.append(_section("*By channel*"))
+        blocks.append(_rate_table(channel_groups, label_header="", with_volume=True))
+    blocks.append(_section("*Platform*"))
+    blocks.append(_rate_table([("all", platform)]))
+    brand_groups = _breakdown(rows, "card_brand")
+    if brand_groups:
+        blocks.append(_section("*By card brand*"))
+        blocks.append(_rate_table(brand_groups, label_header=""))
     blocks.append(_section("*Top merchants by authorized volume*"))
     blocks.append(top_table)
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
@@ -407,7 +515,7 @@ def build_message(
         # Fallback for notifications/clients that don't render blocks.
         "text": (
             f"{header}: {platform['request_count']:,} payments, "
-            f"{_sar(authorized_amount)} authorized "
+            f"{_sar(platform['authorized_amount'])} authorized "
             f"(gross {_pct(platform['gross_auth_rate'])}, "
             f"net {_pct(platform['net_auth_rate'])})"
         ),
@@ -470,7 +578,12 @@ def main(argv: list[str] | None = None) -> None:
             f"no payments found for {activity_day} — not posting an empty summary"
         )
 
-    payload = build_message(rows, activity_day, fetch_platform_totals(client, core))
+    payload = build_message(
+        rows,
+        activity_day,
+        fetch_platform_totals(client, core),
+        fetch_month_authorized_by_channel(client, core, activity_day),
+    )
 
     if args.dry_run:
         print(json.dumps(payload, indent=2))
