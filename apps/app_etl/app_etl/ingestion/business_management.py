@@ -1,13 +1,18 @@
 """business_management database →
-{BQ_DATASET_RAW}.business_management__business_entities — full replace.
+{BQ_DATASET_RAW}.business_management__{business_entities,channels} — full
+replace.
 
-One pipeline per source database; `business_entities` is the only table we
-take from `business_management` today. Small mutable config table: full
-extract every run, `replace` disposition. (The snapshot_date-partitioned
-design in the README is the intended end state; `replace` is the interim
-until that strategy lands.)
+One pipeline per source database; both tables are small mutable config
+tables and get the snapshot shape: full extract every run, `replace`
+disposition. (The snapshot_date-partitioned design in the README is the
+intended end state; `replace` is the interim until that strategy lands.)
+`channels` is the per-business channel/location config (type/sub_type,
+status, terminal counts, receipt footers, addresses, lat/long), FK
+`business_id` -> business_entities.id.
 
-No column allowlist — ingest-everything posture
+No column allowlist — ingest-everything posture. Known-sensitive columns
+(trim on request, per docs/schema-management.md §1): channels.created_by /
+channels.updated_by look like operator identifiers (varchar 255).
 """
 
 from __future__ import annotations
@@ -22,10 +27,11 @@ DATABASE = "business_management"
 
 def run() -> None:
     settings = Settings.from_env()
+    credentials = pg_credentials(settings, DATABASE)
 
     business_entities = bq_resource(
         sql_table(
-            credentials=pg_credentials(settings, DATABASE),
+            credentials=credentials,
             schema="public",
             table="business_entities",
         ).apply_hints(
@@ -42,9 +48,25 @@ def run() -> None:
         cluster="business_id",
     )
 
+    channels = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="channels",
+        ).apply_hints(
+            # TODO: add snapshot_date partitions for point-in-time joins
+            table_name=f"{DATABASE}__channels",
+            write_disposition="replace",
+        ),
+        # parent-FK convention: business_id -> business_entities.id, the
+        # column every downstream join filters on (and the source's own
+        # secondary indexes all lead with it).
+        cluster="business_id",
+    )
+
     pipeline = bq_pipeline(DATABASE, settings)
     load_info = pipeline.run(
-        business_entities, loader_file_format="parquet", refresh=refresh_mode()
+        [business_entities, channels], loader_file_format="parquet", refresh=refresh_mode()
     )
     # per-table extracted row counts — load_info's summary doesn't include them
     print(pipeline.last_trace.last_normalize_info)
