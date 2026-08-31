@@ -16,17 +16,14 @@ Payment operations are never rows here — they resolve enrichment
 (RRN / STAN / TID) and feed the gate. A payment appears twice only when a
 refund books: the sale row plus the negative refund row.
 
-Side-by-side phase: this module lives NEXT TO merchant_daily_report until
-the outputs are validated against each other and product signs off on the
-spine change. Since the 2026-08-30 consolidation it is self-contained: the
-merchant list, column layout, payment-grain build and file writer are
-duplicated VERBATIM from the old module instead of imported, so the two
-exporters share no code and the cutover is a file swap, not an
-untangling. Until cutover, a layout change must land in BOTH files (the
-comparison harness catches drift). It REFUSES a real upload (dry-run
-only) because the filenames match the old report's and a non-dry-run
-would overwrite delivered files in the bucket. At cutover this module
-replaces merchant_daily_report and the guard goes.
+Cutover 2026-08-31: this module replaced merchant_daily_report (the
+payments-created v1) as the sole producer of the delivered per-merchant
+files, after side-by-side output was byte-identical on 2026-08-28/29
+(8/8 files); v1 lives in git history. The daily job runs this module
+twice: per-merchant mode uploads the delivered files under
+merchant-reports/ (same blob layout and filenames as v1), and
+--all-merchants uploads one combined platform-wide file (test merchants
+included) to the finance folder (ALL_MERCHANTS_GCS_PREFIX).
 
 Union spine, for the 1:1 acceptance criterion: the pure settlement spine
 cannot see payments that never reached settlement (declined / failed
@@ -76,12 +73,12 @@ from app_etl.export.common import (
     make_arg_parser,
     merchant_directory,
     resolve_days,
+    upload_files,
 )
 
 # ---------------------------------------------------------------------------
-# Contract constants — duplicated verbatim from merchant_daily_report
-# (2026-08-30 consolidation). A change here must land there too until
-# cutover deletes the old module.
+# Contract constants — the delivered-file contract, owned solely here
+# since the 2026-08-31 cutover deleted merchant_daily_report.
 # ---------------------------------------------------------------------------
 
 # The merchants in scope, id -> display name (the name feeds the report
@@ -104,6 +101,11 @@ MERCHANT_IDS = list(MERCHANTS)
 
 GCS_PREFIX = "merchant-reports"
 REPORT_TYPE = "daily_transactions"
+
+# The --all-merchants combined cut is a finance deliverable, shipped to
+# its own folder on the egress bucket (finance-director grant), never
+# under merchant-reports.
+ALL_MERCHANTS_GCS_PREFIX = "finance-reports/daily_settlement"
 
 # Fee types always materialized as columns so a day without settled
 # payments (or a header-only file) keeps a stable schema; genuinely new
@@ -366,11 +368,12 @@ def fetch_refund_reverse_ops(
 ) -> pd.DataFrame:
     """Successful REFUND / REVERSE ops for in-scope merchants whose event
     day (op updated_at, Riyadh) is the report day, each flagged with
-    whether ANY settlement transaction references it. Feeds the refund
-    tripwire (booking is unreliable upstream: 9 of 15 successful refunds
-    to date never produced a row) and the REVERSE notice. `end_day`
-    widens to an event-day range for one-off reports; `all_merchants=True`
-    lifts the allowlist, test merchants included.
+    whether ANY settlement transaction references it. Feeds the notes: a
+    refund with no settlement row is settled from the merchant's wallet
+    account at Lite (ledger path, confirmed 2026-08-31), and a REVERSE
+    only flips the sale's row on its original day. `end_day` widens to an
+    event-day range for one-off reports; `all_merchants=True` lifts the
+    allowlist, test merchants included.
     """
     query = f"""
         select o.operation_type, o.id as op_id, o.payment_id,
@@ -523,7 +526,7 @@ def dedupe_settlement(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def run_checks(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]:
+def run_checks(spine: pd.DataFrame) -> list[str]:
     """Report-blocking checks (nb 025 gate) — non-empty return means
     nothing may be exported. Runs on the FULL spine (REMOVED rows and
     incident-excluded payments included) so the per-window tie-out sums
@@ -634,14 +637,6 @@ def run_checks(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]:
             f"== window.settled_amount: {win_bad.index.tolist()[:5]}"
         )
 
-    # Refund tripwire: a successful refund with no settlement row means
-    # the file would omit money movement — refuse loudly.
-    unbooked = day_ops.query("operation_type == 'REFUND' and not has_settlement_row")
-    if len(unbooked):
-        failures.append(
-            f"{len(unbooked)} successful REFUND op(s) with NO settlement "
-            f"row: {unbooked['op_id'].tolist()[:5]}"
-        )
     return failures
 
 
@@ -739,6 +734,17 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
             f"{n_reverse} successful REVERSE op(s) on the report day; "
             "visible only as the sale's REMOVED flip on its original day, "
             "never in this day's file"
+        )
+    # A refund with no settlement row is settled from the merchant's
+    # wallet account at Lite (ledger path, settlement team 2026-08-31) —
+    # real money movement, deliberately not in this file. Was a blocking
+    # check until the wallet path was confirmed.
+    wallet = day_ops.query("operation_type == 'REFUND' and not has_settlement_row")
+    if len(wallet):
+        notes.append(
+            f"{len(wallet)} successful REFUND op(s) settled from the "
+            f"merchant wallet (no settlement row, never in this file): "
+            f"{wallet['op_id'].tolist()[:5]}"
         )
     return notes
 
@@ -910,9 +916,10 @@ def write_combined_file(
 ) -> tuple[Path, int]:
     """Every merchant's rows in one CSV, same fixed header (merchant_id
     and merchant_name lead the layout, so rows stay attributable), rows
-    grouped by merchant. Internal review cut only — the delivery contract
-    stays one file per merchant, and the filename matches no merchant
-    slug, so it can never collide with a delivered file.
+    grouped by merchant. A finance deliverable, not a merchant one: the
+    merchant delivery contract stays one file per merchant, and the
+    filename matches no merchant slug, so it can never collide with a
+    delivered file.
     """
     rows = report.sort_values(["merchant_name", "created_at"]).reindex(
         columns=export_columns(report)
@@ -930,7 +937,8 @@ def main(argv: list[str] | None = None) -> None:
         "--all-merchants",
         action="store_true",
         help="every platform merchant, test merchants included, written as "
-        "one combined csv instead of per-merchant files; never uploaded",
+        "one combined csv (uploaded to the finance folder) instead of "
+        "per-merchant files",
     )
     args = parser.parse_args(argv)
     report_day, run_date = resolve_days(args)
@@ -958,7 +966,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Both gates: the settlement-spine gate, plus the payment-grain gate
     # (duplicate payment ids, channel tenant guard) for the leftovers.
-    failures = run_checks(spine, day_ops) + run_payment_checks(payments, empty_settle)
+    failures = run_checks(spine) + run_payment_checks(payments, empty_settle)
     if failures:
         raise SystemExit(
             "report-blocking check failures:\n- " + "\n- ".join(failures)
@@ -1000,12 +1008,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         print(f"dry run — nothing uploaded, files under {out_dir}")
         return
-    # Side-by-side phase guard: filenames match merchant_daily_report's,
-    # so a real upload would overwrite delivered files. Goes at cutover.
-    raise SystemExit(
-        "settlement_daily_report is in side-by-side validation: run with "
-        "--dry-run; uploads stay with merchant_daily_report until cutover"
-    )
+    if not settings.gcs_bucket_egress:
+        raise SystemExit("GCS_BUCKET_EGRESS is not set (required unless --dry-run)")
+    if args.all_merchants:
+        pairs = [(f"{ALL_MERCHANTS_GCS_PREFIX}/{path.name}", path)]
+    else:
+        # Blob name reuses the local filename so the two can never drift.
+        pairs = [
+            (f"{GCS_PREFIX}/{mid}/{REPORT_TYPE}/{path.name}", path)
+            for mid, path, _ in files
+        ]
+    for uri in upload_files(pairs, settings.gcs_bucket_egress, settings.gcp_project):
+        print(f"uploaded {uri}")
 
 
 if __name__ == "__main__":

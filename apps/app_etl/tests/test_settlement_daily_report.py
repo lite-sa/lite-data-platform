@@ -2,22 +2,20 @@
 only, no BigQuery/GCS involved (CI never gets credentials; same stance as
 the merchant-report and notify-job tests).
 
-Beyond the old suite's coverage this adds: one poisoned fixture per gate
-check in run_checks, the informational notes, the refund row's
-original-payment semantics in build_report, the leftover payment-grain
-path, and a drift guard pinning the contract constants shared with
-merchant_daily_report until cutover.
+Coverage: one poisoned fixture per gate check in run_checks, the
+informational notes, the refund row's original-payment semantics in
+build_report, the leftover payment-grain path, the file writers, and the
+seed-lockstep guard for the incident exclusion list.
 """
 
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
-import app_etl.export.merchant_daily_report as v1
-import app_etl.export.settlement_daily_report as v2
 from app_etl.export.settlement_daily_report import (
     EXCLUDED_PAYMENT_IDS,
     EXPORT_COLUMNS,
@@ -121,8 +119,9 @@ def _prepared_spine() -> tuple[pd.DataFrame, list[str]]:
 
 
 def _day_ops() -> pd.DataFrame:
-    # A booked refund (fine) and a REVERSE (note only — a reversal has no
-    # settlement row of its own and must not trip the refund tripwire).
+    # A booked refund (window path) and a REVERSE (note only). A refund
+    # with has_settlement_row=False is the wallet path — note, never a
+    # gate failure (see the wallet-note test).
     return pd.DataFrame(
         {
             "operation_type": ["REFUND", "REVERSE"],
@@ -185,19 +184,17 @@ def _prepared_empty_settle() -> pd.DataFrame:
     return settle
 
 
-# --- contract drift guard (side-by-side phase) -----------------------------
+# --- shared-list lockstep guards -------------------------------------------
 
 
-def test_contract_constants_match_merchant_daily_report():
-    # Until cutover a layout change must land in BOTH modules; this is the
-    # executable version of that rule. Deliberately constants-only: the
-    # code paths may diverge, the delivered contract may not.
-    assert v2.EXPORT_COLUMNS == v1.EXPORT_COLUMNS
-    assert v2.MERCHANTS == v1.MERCHANTS
-    assert v2.SETTLE_EXPORT_COLS == v1.SETTLE_EXPORT_COLS
-    assert v2.BASE_FEE_TYPES == v1.BASE_FEE_TYPES
-    assert v2.GCS_PREFIX == v1.GCS_PREFIX
-    assert v2.REPORT_TYPE == v1.REPORT_TYPE
+def test_excluded_payment_ids_match_dbt_seed():
+    # The canonical exclusion list is the dbt seed; the export carries a
+    # copy because its query runs in parallel with dbt build and cannot
+    # depend on the seed table existing. This is the lockstep guard.
+    seed = pd.read_csv(
+        Path(__file__).parents[1] / "dbt" / "seeds" / "incident_excluded_payments.csv"
+    )
+    assert sorted(seed["payment_id"]) == sorted(EXCLUDED_PAYMENT_IDS)
 
 
 # --- transforms ------------------------------------------------------------
@@ -238,25 +235,25 @@ def test_checks_pass_on_good_spine():
     # Note what "good" already contains: a REMOVED row with a broken
     # tie-out and a NULL operation — both must stay invisible to the gate.
     spine, _ = _prepared_spine()
-    assert run_checks(spine, _day_ops()) == []
+    assert run_checks(spine) == []
 
 
 def test_checks_block_unresolved_joins_and_duplicates():
     spine, _ = _prepared_spine()
 
     dup = spine.assign(settlement_transaction_id="t1")
-    assert any("duplicate settlement" in f for f in run_checks(dup, _day_ops()))
+    assert any("duplicate settlement" in f for f in run_checks(dup))
 
     no_op = spine.copy()
     no_op.loc[no_op["settlement_transaction_id"] == "t1", "op_resolved"] = False
-    assert any("no payment_operation" in f for f in run_checks(no_op, _day_ops()))
+    assert any("no payment_operation" in f for f in run_checks(no_op))
 
     no_pay = spine.copy()
     no_pay.loc[
         no_pay["settlement_transaction_id"] == "t1", "payment_resolved"
     ] = False
     assert any(
-        "no payment for parent_payment_id" in f for f in run_checks(no_pay, _day_ops())
+        "no payment for parent_payment_id" in f for f in run_checks(no_pay)
     )
 
 
@@ -265,19 +262,19 @@ def test_checks_block_cross_tenant_and_foreign_currency():
 
     cross = spine.copy()
     cross.loc[cross["settlement_transaction_id"] == "t1", "payment_merchant_id"] = M2
-    assert any("window merchant" in f for f in run_checks(cross, _day_ops()))
+    assert any("window merchant" in f for f in run_checks(cross))
 
     cross_chan = spine.copy()
     cross_chan.loc[
         cross_chan["settlement_transaction_id"] == "t1", "channel_merchant_id"
     ] = M2
-    assert any("channel belongs" in f for f in run_checks(cross_chan, _day_ops()))
+    assert any("channel belongs" in f for f in run_checks(cross_chan))
 
     foreign = spine.copy()
     foreign.loc[foreign["settlement_transaction_id"] == "t1", "payment_currency"] = (
         "USD"
     )
-    assert any("non-SAR" in f for f in run_checks(foreign, _day_ops()))
+    assert any("non-SAR" in f for f in run_checks(foreign))
 
 
 def test_checks_block_amount_and_sign_violations():
@@ -287,31 +284,27 @@ def test_checks_block_amount_and_sign_violations():
     bad_tie.loc[
         bad_tie["settlement_transaction_id"] == "t1", "settled_amount_minor"
     ] = 999
-    assert any("amount - fees" in f for f in run_checks(bad_tie, _day_ops()))
+    assert any("amount - fees" in f for f in run_checks(bad_tie))
 
     # Every negative row must be born HELD.
     no_hold = spine.assign(hold_at=pd.NaT)
-    assert any("without hold_at" in f for f in run_checks(no_hold, _day_ops()))
+    assert any("without hold_at" in f for f in run_checks(no_hold))
 
     # operation says refund, sign says sale (and vice versa).
     op_sign = spine.copy()
     op_sign.loc[op_sign["settlement_transaction_id"] == "t2", "operation"] = "pay"
-    assert any("sign disagree" in f for f in run_checks(op_sign, _day_ops()))
+    assert any("sign disagree" in f for f in run_checks(op_sign))
 
 
-def test_checks_block_window_tieout_and_unbooked_refunds():
+def test_checks_block_window_tieout():
     spine, _ = _prepared_spine()
 
     bad_win = spine.copy()
     bad_win.loc[
         bad_win["settlement_window_id"] == "w1", "window_settled_amount_minor"
     ] = 0
-    failures = run_checks(bad_win, _day_ops())
+    failures = run_checks(bad_win)
     assert any("1 window(s)" in f and "w1" in f for f in failures)
-
-    unbooked = _day_ops().assign(has_settlement_row=False)
-    failures = run_checks(spine, unbooked)
-    assert any("NO settlement row" in f and "op-r1" in f for f in failures)
 
 
 def test_payment_checks_on_leftover_path():
@@ -336,6 +329,18 @@ def test_informational_notes_cover_the_designed_cases():
     assert "1 row(s) whose transaction day differs" in joined  # t4
     assert "1 row(s) with NULL operation" in joined  # t3, pre-0009
     assert "1 successful REVERSE op(s)" in joined
+    # The booked refund (has_settlement_row=True) earns no wallet note.
+    assert "merchant wallet" not in joined
+
+
+def test_wallet_settled_refunds_note_never_block():
+    # A refund with no settlement row is settled from the merchant wallet
+    # (ledger path, confirmed 2026-08-31): a note, not a gate failure.
+    spine, _ = _prepared_spine()
+    wallet_ops = _day_ops().assign(has_settlement_row=False)
+    assert run_checks(spine) == []
+    notes = informational_notes(spine, wallet_ops)
+    assert any("merchant wallet" in n and "op-r1" in n for n in notes)
 
 
 # --- build -----------------------------------------------------------------

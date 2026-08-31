@@ -1,6 +1,8 @@
 # Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
-# database) -> transform + export (parallel: dbt build writing core,
-# merchant report export reading raw). One Cloud Scheduler trigger
+# database) -> transform + export (parallel: dbt build writing core, the
+# daily report exports — the per-merchant settlement files + the
+# all-merchants finance file, one job via
+# app_etl.export.daily_reports — reading raw). One Cloud Scheduler trigger
 # executes this workflow daily instead of staggered per-job schedules
 # guessing each other's runtimes.
 #
@@ -80,10 +82,13 @@ main:
                         job: ingest-settlement
     # Both branches run only after every ingest branch succeeded — dbt
     # never builds on a partial extract — and are independent of each
-    # other (dbt reads raw and writes core; the export reads raw and
-    # writes the reports bucket), so they fan out. Both are FATAL: a
-    # broken build or a merchant deliverable that didn't ship must fail
-    # the execution, which is today's only alert signal.
+    # other (dbt reads raw and writes core; the exports read raw and
+    # write the egress bucket), so they fan out. Both are FATAL: a
+    # broken build or a report deliverable that didn't ship must fail
+    # the execution, which is today's only alert signal. The
+    # export-merchant-daily job runs app_etl.export.daily_reports — the
+    # settlement report in per-merchant and all-merchants modes, isolated
+    # per mode inside the job.
     - transform_and_export:
         parallel:
           branches:

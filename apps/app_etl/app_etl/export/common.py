@@ -1,7 +1,4 @@
-"""Shared plumbing for the daily export reports.
-
-Everything here is used by at least two report modules
-(merchant_daily_report, financial_daily_report): the Riyadh calendar
+"""Shared plumbing for the daily export reports: the Riyadh calendar
 contract, the incident exclusion list, the latest-version dedup fragment,
 CLI/date handling, and the GCS upload. Report-specific logic (queries,
 column layouts, filenames) stays in the report modules — this module must
@@ -15,8 +12,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pandas as pd
-from google.cloud import bigquery, storage
+from google.cloud import storage
 
 # Mirrors dbt's local_timezone var: report days are local calendar dates,
 # and "previous day" is a local-midnight question.
@@ -71,67 +67,6 @@ def merchant_directory(raw: str) -> str:
                 partition by business_id order by updated_at desc, _dlt_load_id desc
             ) = 1
         )"""
-
-
-def fetch_reversal_refund_ops(
-    client: bigquery.Client, raw: str, report_day: date
-) -> pd.DataFrame:
-    """Successful REVERSE/REFUND ops whose EVENT day (op updated_at, the
-    FSM finalize moment, Riyadh) is the report day — regardless of when
-    the parent payment was created — joined back to payments for merchant
-    attribution and the original payment's facts. A reversal is an event
-    of its own day, never a mutation of an already-delivered daily file;
-    both the finance and the merchant reversal files read this. All
-    merchants; callers scope and shape the frame.
-    """
-    query = f"""
-        select
-            b.name as merchant_name,
-            p.merchant_id,
-            o.operation_type,
-            o.amount as amount_minor,
-            p.currency,
-            json_value(o.metadata, '$.rrn') as rrn,
-            o.terminal_id,
-            o.payment_id,
-            p.status as payment_status,
-            p.amount as payment_amount_minor,
-            json_value(p.order_data, '$.reference') as order_reference,
-            date(datetime(p.created_at, @tz)) as payment_creation_date,
-            date(datetime(o.updated_at, @tz)) as event_date,
-            o.updated_at as executed_at_utc,
-            o.id as operation_id
-        from {latest_version(f"{raw}.payment_v2__payment_operations")} o
-        left join {latest_version(f"{raw}.payment_v2__payments")} p
-            on p.id = o.payment_id
-        left join {merchant_directory(raw)} b
-            on b.business_id = p.merchant_id
-        where o.operation_type in ('REVERSE', 'REFUND')
-          and o.status = 'SUCCESS'
-          and date(datetime(o.updated_at, @tz)) = @report_day
-          and (o.payment_id is null
-               or o.payment_id not in unnest(@excluded_payment_ids))
-        order by o.updated_at
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("tz", "STRING", LOCAL_TIMEZONE),
-            bigquery.ScalarQueryParameter("report_day", "DATE", report_day),
-            bigquery.ArrayQueryParameter(
-                "excluded_payment_ids", "STRING", EXCLUDED_PAYMENT_IDS
-            ),
-        ]
-    )
-    return client.query(query, job_config=job_config).to_dataframe()
-
-
-def to_major(amount_minor, currency):
-    """Minor→major units per ISO 4217 exponent — same divisor rule as the
-    payments mart. Takes aligned pandas Series, returns a float Series
-    (BQ NUMERIC arrives as Decimal, whose zero renders as 0E-9 in CSVs).
-    """
-    exp3 = currency.isin(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"])
-    return amount_minor.astype("float") / exp3.map({True: 1000.0, False: 100.0})
 
 
 def make_arg_parser(description: str) -> argparse.ArgumentParser:

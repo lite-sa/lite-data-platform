@@ -43,9 +43,9 @@ class Settings:
     # it unset.
     gcs_bucket: str | None = None
 
-    # Report egress bucket (merchant-facing files), e.g. lite-data-dev-egress.
-    # Required by export jobs only — merchant_daily_report enforces it; every
-    # other job leaves it unset. Distinct from gcs_bucket: staging is
+    # Report egress bucket (merchant- and finance-facing files), e.g.
+    # lite-data-dev-egress. Required by export jobs only —
+    # settlement_daily_report enforces it; every other job leaves it unset. Distinct from gcs_bucket: staging is
     # platform-internal with a 7-day lifecycle rule, egress persists and is
     # read by the delivery side.
     gcs_bucket_egress: str | None = None
