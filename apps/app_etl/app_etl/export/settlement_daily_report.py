@@ -196,6 +196,7 @@ def fetch_window_transactions(
     raw: str,
     report_day: date,
     end_day: date | None = None,
+    all_merchants: bool = False,
 ) -> pd.DataFrame:
     """The spine: EVERY settlement transaction (latest version) in the
     in-scope merchants' windows collecting on the report day, REMOVED rows
@@ -210,7 +211,8 @@ def fetch_window_transactions(
 
     `end_day` widens the extraction to the closed collection-day range
     [report_day, end_day] for one-off range reports; the daily job never
-    passes it.
+    passes it. `all_merchants=True` lifts the MERCHANTS allowlist to the
+    whole platform, test merchants included.
     """
     query = f"""
         select
@@ -266,12 +268,13 @@ def fetch_window_transactions(
             on cb.id = c.business_id
         where coalesce(w.collection_date, date(datetime(w.created_at, @tz)))
               between @report_day and @end_day
-          and w.merchant_id in unnest(@merchant_ids)
+          and (@all_merchants or w.merchant_id in unnest(@merchant_ids))
         order by t.created_at
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("merchant_ids", "STRING", MERCHANT_IDS),
+            bigquery.ScalarQueryParameter("all_merchants", "BOOL", all_merchants),
             bigquery.ScalarQueryParameter("tz", "STRING", LOCAL_TIMEZONE),
             bigquery.ScalarQueryParameter("report_day", "DATE", report_day),
             bigquery.ScalarQueryParameter("end_day", "DATE", end_day or report_day),
@@ -285,6 +288,7 @@ def fetch_payments(
     raw: str,
     report_day: date,
     end_day: date | None = None,
+    all_merchants: bool = False,
 ) -> pd.DataFrame:
     """The day's payments for the in-scope merchants, latest version per id
     (the dedup a stg_ model would own), with the merchant's display name
@@ -292,7 +296,8 @@ def fetch_payments(
     channel_merchant_id is the channel's owning business mapped back to
     the natural merchant key — the cross-tenant guard, never exported.
     Incident-excluded payments (EXCLUDED_PAYMENT_IDS) never enter this
-    frame. `end_day` widens to a creation-day range for one-off reports.
+    frame. `end_day` widens to a creation-day range for one-off reports;
+    `all_merchants=True` lifts the allowlist, test merchants included.
     """
     query = f"""
         select
@@ -307,13 +312,14 @@ def fetch_payments(
             on c.id = p.channel_id
         left join {latest_version(f"{raw}.business_management__business_entities")} cb
             on cb.id = c.business_id
-        where p.merchant_id in unnest(@merchant_ids)
+        where (@all_merchants or p.merchant_id in unnest(@merchant_ids))
           and p.id not in unnest(@excluded_payment_ids)
           and date(datetime(p.created_at, @tz)) between @report_day and @end_day
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("merchant_ids", "STRING", MERCHANT_IDS),
+            bigquery.ScalarQueryParameter("all_merchants", "BOOL", all_merchants),
             bigquery.ArrayQueryParameter(
                 "excluded_payment_ids", "STRING", EXCLUDED_PAYMENT_IDS
             ),
@@ -356,13 +362,15 @@ def fetch_refund_reverse_ops(
     raw: str,
     report_day: date,
     end_day: date | None = None,
+    all_merchants: bool = False,
 ) -> pd.DataFrame:
     """Successful REFUND / REVERSE ops for in-scope merchants whose event
     day (op updated_at, Riyadh) is the report day, each flagged with
     whether ANY settlement transaction references it. Feeds the refund
     tripwire (booking is unreliable upstream: 9 of 15 successful refunds
     to date never produced a row) and the REVERSE notice. `end_day`
-    widens to an event-day range for one-off reports.
+    widens to an event-day range for one-off reports; `all_merchants=True`
+    lifts the allowlist, test merchants included.
     """
     query = f"""
         select o.operation_type, o.id as op_id, o.payment_id,
@@ -374,12 +382,13 @@ def fetch_refund_reverse_ops(
             on t.external_reference_id = o.id
         where o.operation_type in ('REFUND', 'REVERSE')
           and o.status = 'SUCCESS'
-          and p.merchant_id in unnest(@merchant_ids)
+          and (@all_merchants or p.merchant_id in unnest(@merchant_ids))
           and date(datetime(o.updated_at, @tz)) between @report_day and @end_day
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("merchant_ids", "STRING", MERCHANT_IDS),
+            bigquery.ScalarQueryParameter("all_merchants", "BOOL", all_merchants),
             bigquery.ScalarQueryParameter("tz", "STRING", LOCAL_TIMEZONE),
             bigquery.ScalarQueryParameter("report_day", "DATE", report_day),
             bigquery.ScalarQueryParameter("end_day", "DATE", end_day or report_day),
@@ -893,8 +902,37 @@ def write_daily_files(
     return written
 
 
+def write_combined_file(
+    report: pd.DataFrame,
+    report_day: date,
+    run_date: date,
+    out_dir: Path,
+) -> tuple[Path, int]:
+    """Every merchant's rows in one CSV, same fixed header (merchant_id
+    and merchant_name lead the layout, so rows stay attributable), rows
+    grouped by merchant. Internal review cut only — the delivery contract
+    stays one file per merchant, and the filename matches no merchant
+    slug, so it can never collide with a delivered file.
+    """
+    rows = report.sort_values(["merchant_name", "created_at"]).reindex(
+        columns=export_columns(report)
+    )
+    filename = (
+        f"all_merchants_daily_transaction_report_{report_day}_run_{run_date}.csv"
+    )
+    rows.to_csv(out_dir / filename, index=False, float_format="%.2f")
+    return out_dir / filename, len(rows)
+
+
 def main(argv: list[str] | None = None) -> None:
-    args = make_arg_parser(__doc__).parse_args(argv)
+    parser = make_arg_parser(__doc__)
+    parser.add_argument(
+        "--all-merchants",
+        action="store_true",
+        help="every platform merchant, test merchants included, written as "
+        "one combined csv instead of per-merchant files; never uploaded",
+    )
+    args = parser.parse_args(argv)
     report_day, run_date = resolve_days(args)
     settings = Settings.from_env()
     # Explicit location, as everywhere: BigQuery defaults to the US
@@ -902,13 +940,19 @@ def main(argv: list[str] | None = None) -> None:
     client = bigquery.Client(project=settings.gcp_project, location="me-central2")
     raw = f"{settings.gcp_project}.{settings.bq_dataset_raw}"
 
-    spine = fetch_window_transactions(client, raw, report_day)
+    spine = fetch_window_transactions(
+        client, raw, report_day, all_merchants=args.all_merchants
+    )
     spine, fee_cols = pivot_fees_txn(spine)
-    day_ops = fetch_refund_reverse_ops(client, raw, report_day)
+    day_ops = fetch_refund_reverse_ops(
+        client, raw, report_day, all_merchants=args.all_merchants
+    )
     # The day's payments (v1 spine, incident-excluded already dropped):
     # whichever of them the settlement spine does not cover ships
     # payment-grain with empty settlement columns (see module docstring).
-    payments = fetch_payments(client, raw, report_day)
+    payments = fetch_payments(
+        client, raw, report_day, all_merchants=args.all_merchants
+    )
     empty_settle, _ = pivot_fees(_empty_settlement())
     empty_settle, _ = dedupe_settlement(empty_settle)
 
@@ -945,9 +989,13 @@ def main(argv: list[str] | None = None) -> None:
         ignore_index=True,
     )
     out_dir = Path(tempfile.mkdtemp(prefix="settlement-daily-"))
-    files = write_daily_files(report, report_day, run_date, out_dir)
-    for mid, path, n_rows in files:
-        print(f"{mid}: {n_rows} rows -> {path}")
+    if args.all_merchants:
+        path, n_rows = write_combined_file(report, report_day, run_date, out_dir)
+        print(f"all merchants: {n_rows} rows -> {path}")
+    else:
+        files = write_daily_files(report, report_day, run_date, out_dir)
+        for mid, path, n_rows in files:
+            print(f"{mid}: {n_rows} rows -> {path}")
 
     if args.dry_run:
         print(f"dry run — nothing uploaded, files under {out_dir}")
