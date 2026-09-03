@@ -448,14 +448,45 @@ nothing else:
 
 Worked example, the merchant daily export (BQ/GCS shape):
 
+For DEV
+
+```bash
+gcloud run jobs create ingest-checkout-session \
+  --project=$DEV --region=$REGION --image=$IMG \
+  --service-account=$SA \
+  --command=python --args="-m,app_etl.ingestion.checkout_session" \
+  --set-env-vars="GCP_PROJECT=$DEV,GCS_BUCKET=$BUCKET,BQ_DATASET_RAW=raw_test" \
+  --set-env-vars="PG_INSTANCE_CONNECTION_NAME=lite-litecore-dev:me-central2:non-cde-postgres" \
+  --set-env-vars="PG_IAM_USER=sa-app-etl@lite-data-dev.iam" \
+  --task-timeout=900 --max-retries=0
+```
+
+For PROD
+```bash
+gcloud run jobs create ingest-checkout-session \
+  --project=$PROD --region=$REGION --image=$IMG \
+  --service-account=$SA_PROD \
+  --network=$VPC_PROD --subnet=$SUBNET_PROD --vpc-egress=private-ranges-only \
+  --command=python --args="-m,app_etl.ingestion.checkout_session" \
+  --set-env-vars="GCP_PROJECT=$PROD,GCS_BUCKET=$BUCKET_PROD,BQ_DATASET_RAW=raw_litecore" \
+  --set-env-vars="PG_INSTANCE_CONNECTION_NAME=$PG_ICN_PROD" \
+  --set-env-vars="PG_IAM_USER=sa-app-etl@lite-data-prod.iam,PG_IP_TYPE=psc" \
+  --task-timeout=900 --max-retries=0
+```
+
+
 ```bash
 PROD=lite-data-prod
 SA_PROD=sa-app-etl@lite-data-prod.iam.gserviceaccount.com
 
+# daily_reports runs the settlement report twice: per-merchant delivered
+# files + the all-merchants file to finance-reports/daily_settlement/
+# (since the 2026-08-31 cutover; the job predates it — an existing job
+# gets the same flags via `gcloud run jobs update`)
 gcloud run jobs create export-merchant-daily \
   --project=$PROD --region=$REGION --image="$IMG" \
   --service-account=$SA_PROD \
-  --command=python --args="-m,app_etl.export.merchant_daily_report" \
+  --command=python --args="-m,app_etl.export.daily_reports" \
   --set-env-vars="GCP_PROJECT=$PROD,BQ_DATASET_RAW=raw_litecore,GCS_BUCKET_EGRESS=lite-data-prod-egress" \
   --task-timeout=900 --max-retries=0
 
