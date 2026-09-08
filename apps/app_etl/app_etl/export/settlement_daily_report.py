@@ -47,6 +47,14 @@ deltas that remain are the designed ones
   payment-grain row with empty settlement columns, exactly like the old
   spine after its REMOVED filter.
 
+The gate is all-or-nothing per run: `run_checks` reads the whole spine
+before the merchant split, so one bad row blocks every merchant's file for
+that day. Two id-pinned waivers (`WAIVED_UNRESOLVED_TXNS`,
+`WAIVED_TIE_OUT_WINDOWS`) keep known, investigated rows from doing that,
+and `informational_notes` names them on every run that carries one. They
+were ported from notebooks/028 on 2026-09-05 so the daily job and the
+one-off range runs share one gate.
+
 TODO(finops sign-off): add `transaction_type` (SALE / REFUND) and the raw
 settlement `operation` (pay | capture | authorize | refund) to the layout
 as PROPOSED_ADDITIONS once finops signs off (nb 025 review 2026-08-30).
@@ -114,6 +122,31 @@ BASE_FEE_TYPES = ("mdr", "vat", "flat")
 BASE_FEE_COLS = [f"fee_{t}_minor" for t in BASE_FEE_TYPES]
 
 TERMINAL_WINDOW_STATUSES = ("SUCCESS", "FAILED")
+
+# Gate waivers. Both are pinned to specific ids investigated 2026-09-01
+# and ported here from notebooks/028 on 2026-09-05, so the daily job and
+# the one-off range runs share one gate. Anything not listed still blocks.
+#
+# A manual VAT-deduct remediation entry, booked by the settlement team as
+# a settlement transaction with references that exist nowhere in
+# payment_v2 (amount 1 minor, fees [{vat: 19508}], settled -19507, in
+# alakhwa almutamayiza's 2026-08-26 window; cause confirmed by the
+# settlement team 2026-09-05). The window tie-out passes, so the
+# -195.07 SAR is genuinely in the payout and must stay in a finance file;
+# it ships with empty payment-level columns, as the 2026-08-30 one-off
+# range file did. Track J Q9 stays open on the two questions this waiver
+# does not answer (docs/settlement-daily-report-v2-design.md §10): whether
+# finance wants adjustments in this file or a separate adjustments report,
+# and whether settlement can mark them at source — until they can, every
+# new remediation entry blocks a day's files until someone adds its id.
+WAIVED_UNRESOLVED_TXNS = frozenset({"e719e386-e8d9-4d48-99c9-f13c11924a12"})
+
+# Window deeff147 (merchant 97476ad7, collection day 2026-07-26) paid out
+# 1180 without deducting a -250 refund hold that is still HELD; the refund
+# op SUCCEEDed the same minute, so the money moved via the wallet/ledger
+# path and the hold row was orphaned (pre-0009 row, operation NULL). The
+# HELD row ships as usual; only this window's tie-out failure is waived.
+WAIVED_TIE_OUT_WINDOWS = frozenset({"deeff147-8301-44b0-9210-fecbdbf305de"})
 
 # Settlement columns the join contributes (post-rename) on the
 # payment-grain leftover path. Ensured to exist even when there are no
@@ -539,15 +572,20 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
         failures.append("duplicate settlement transaction ids after dedup")
 
     # Join contract: every row must resolve its operation and payment;
-    # an unresolved row is money we cannot attribute or describe.
-    if len(spine) and not spine["op_resolved"].all():
+    # an unresolved row is money we cannot attribute or describe. The
+    # waived adjustment entries are the one exception, excluded row by row
+    # so any other unresolved row still blocks.
+    waived = spine["settlement_transaction_id"].isin(WAIVED_UNRESOLVED_TXNS)
+    no_op = ~spine["op_resolved"].fillna(False).astype(bool) & ~waived
+    if no_op.any():
         failures.append(
-            f"{int((~spine['op_resolved']).sum())} rows with no "
+            f"{int(no_op.sum())} rows with no "
             "payment_operation for external_reference_id"
         )
-    if len(spine) and not spine["payment_resolved"].all():
+    no_payment = ~spine["payment_resolved"].fillna(False).astype(bool) & ~waived
+    if no_payment.any():
         failures.append(
-            f"{int((~spine['payment_resolved']).sum())} rows with no "
+            f"{int(no_payment.sum())} rows with no "
             "payment for parent_payment_id"
         )
 
@@ -631,6 +669,7 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
             win_sums["included_settled_minor"]
         )
     ]
+    win_bad = win_bad.loc[~win_bad.index.isin(WAIVED_TIE_OUT_WINDOWS)]
     if len(win_bad):
         failures.append(
             f"{len(win_bad)} window(s) failing sum(included settled_amount) "
@@ -696,6 +735,30 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
     """Non-blocking observations, printed after the gate passes."""
     notes: list[str] = []
     included = spine["included_in_window"].fillna(False).astype(bool)
+    # A waiver must never apply silently: name the waived ids whenever the
+    # run carries one, so the log says why the gate stayed quiet.
+    waived_txns = sorted(
+        set(spine.loc[
+            spine["settlement_transaction_id"].isin(WAIVED_UNRESOLVED_TXNS),
+            "settlement_transaction_id",
+        ])
+    )
+    if waived_txns:
+        notes.append(
+            f"WAIVED join contract for {waived_txns}: manual adjustment "
+            "entry, ships with empty payment-level columns"
+        )
+    waived_windows = sorted(
+        set(spine.loc[
+            spine["settlement_window_id"].isin(WAIVED_TIE_OUT_WINDOWS),
+            "settlement_window_id",
+        ])
+    )
+    if waived_windows:
+        notes.append(
+            f"WAIVED per-window tie-out for {waived_windows}: stuck HELD "
+            "refund hold"
+        )
     open_windows = spine.loc[
         ~spine["window_status"].isin(TERMINAL_WINDOW_STATUSES),
         "settlement_window_id",

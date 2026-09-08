@@ -15,6 +15,7 @@ factories.
 | `ingestion/ledger.py` | `ledger`: `account`, `entry` | incremental append on `updated_at`, as above |
 | `ingestion/smart_routing.py` | `smart_routing`: `profile`, `routing_rule` / `transaction_evaluation` | full replace (interim) / incremental append |
 | `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim; snapshots below are the target) |
+| `ingestion/pricing_engine.py` | `pricing_engine`: `rule_evaluation` | incremental append on `updated_at`, as above (per-op fee evaluation; `origin_reference` = op id for `payment-v2-service` rows) |
 
 All pipelines run through the one daily workflow
 (`workflows/daily_pipeline.yaml`) — no staggered per-job schedules.

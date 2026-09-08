@@ -2,7 +2,8 @@
 only, no BigQuery/GCS involved (CI never gets credentials; same stance as
 the merchant-report and notify-job tests).
 
-Coverage: one poisoned fixture per gate check in run_checks, the
+Coverage: one poisoned fixture per gate check in run_checks, both gate
+waivers (they fire only for their own id, and never in silence), the
 informational notes, the refund row's original-payment semantics in
 build_report, the leftover payment-grain path, the file writers, and the
 seed-lockstep guard for the incident exclusion list.
@@ -30,6 +31,8 @@ from app_etl.export.settlement_daily_report import (
     pivot_fees,
     pivot_fees_txn,
     pos_identifiers,
+    WAIVED_TIE_OUT_WINDOWS,
+    WAIVED_UNRESOLVED_TXNS,
     run_checks,
     run_payment_checks,
     write_combined_file,
@@ -305,6 +308,72 @@ def test_checks_block_window_tieout():
     ] = 0
     failures = run_checks(bad_win)
     assert any("1 window(s)" in f and "w1" in f for f in failures)
+
+
+def test_waived_adjustment_entry_passes_only_for_its_own_id():
+    # The manual VAT-remediation entry resolves neither reference. Its id
+    # is waived; the same breakage on any other row still blocks.
+    spine, _ = _prepared_spine()
+    waived_id = next(iter(WAIVED_UNRESOLVED_TXNS))
+
+    adjustment = spine.copy()
+    adjustment.loc[
+        adjustment["settlement_transaction_id"] == "t1",
+        ["settlement_transaction_id", "op_resolved", "payment_resolved"],
+    ] = [waived_id, False, False]
+    assert run_checks(adjustment) == []
+
+    # Same two broken joins, an id nobody investigated: still blocked.
+    stranger = spine.copy()
+    stranger.loc[
+        stranger["settlement_transaction_id"] == "t1",
+        ["op_resolved", "payment_resolved"],
+    ] = False
+    failures = run_checks(stranger)
+    assert any("no payment_operation" in f for f in failures)
+    assert any("no payment for parent_payment_id" in f for f in failures)
+
+    # A waived row does not cover an unresolved row sitting beside it.
+    both = adjustment.copy()
+    both.loc[both["settlement_transaction_id"] == "t2", "op_resolved"] = False
+    assert any("1 rows with no payment_operation" in f for f in run_checks(both))
+
+
+def test_waived_window_tieout_passes_only_for_its_own_window():
+    spine, _ = _prepared_spine()
+    waived_window = next(iter(WAIVED_TIE_OUT_WINDOWS))
+
+    broken = spine.copy()
+    broken.loc[
+        broken["settlement_window_id"] == "w1", "window_settled_amount_minor"
+    ] = 0
+    assert any("1 window(s)" in f and "w1" in f for f in run_checks(broken))
+
+    waived = broken.copy()
+    waived.loc[waived["settlement_window_id"] == "w1", "settlement_window_id"] = (
+        waived_window
+    )
+    assert run_checks(waived) == []
+
+
+def test_waivers_are_never_silent():
+    # A waived row that ships must say so in the notes, or nobody learns
+    # the gate stayed quiet on purpose.
+    spine, _ = _prepared_spine()
+    waived_id = next(iter(WAIVED_UNRESOLVED_TXNS))
+    waived_window = next(iter(WAIVED_TIE_OUT_WINDOWS))
+    assert not any("WAIVED" in n for n in informational_notes(spine, _day_ops()))
+
+    carrying = spine.copy()
+    carrying.loc[
+        carrying["settlement_transaction_id"] == "t1", "settlement_transaction_id"
+    ] = waived_id
+    carrying.loc[
+        carrying["settlement_window_id"] == "w1", "settlement_window_id"
+    ] = waived_window
+    notes = "\n".join(informational_notes(carrying, _day_ops()))
+    assert f"WAIVED join contract for ['{waived_id}']" in notes
+    assert f"WAIVED per-window tie-out for ['{waived_window}']" in notes
 
 
 def test_payment_checks_on_leftover_path():

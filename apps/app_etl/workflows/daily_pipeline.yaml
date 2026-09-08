@@ -25,7 +25,7 @@
 # delete a sibling's just-staged state file mid-load. The staging prefix
 # is now namespaced per pipeline (utils/dlt_helpers.py::bq_pipeline),
 # which removes the collision even for overlapping manual runs, so
-# extraction fans out again. The source replica now takes the five
+# extraction fans out again. The source replica now takes the seven
 # extracts concurrently — accepted at current volumes.
 #
 # Deploy (user-run, tracked in docs/lite-data-prod-provisioning.md Phase 5):
@@ -80,6 +80,18 @@ main:
                       call: run_job
                       args:
                         job: ingest-settlement
+            - checkout_session:
+                steps:
+                  - run_checkout_session:
+                      call: run_job
+                      args:
+                        job: ingest-checkout-session
+            - pricing_engine:
+                steps:
+                  - run_pricing_engine:
+                      call: run_job
+                      args:
+                        job: ingest-pricing-engine
     # Both branches run only after every ingest branch succeeded — dbt
     # never builds on a partial extract — and are independent of each
     # other (dbt reads raw and writes core; the exports read raw and
