@@ -24,3 +24,6 @@ infra.env
 .DS_Store
 .idea/
 .vscode/
+
+# Local issue tracker (docs/agents/issue-tracker.md), untracked for now
+.scratch/

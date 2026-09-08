@@ -22,8 +22,10 @@ app-etl = { workspace = true }
 dev = [
     "bigframes>=2.45.0",
     "jupyterlab>=4.6.1",
+    "plotly>=7.0.0",
     "pytest>=8",
     "ruff>=0.5",
+    "scipy>=1.18.1",
     "shandy-sqlfmt>=0.30.0",
 ]
 
