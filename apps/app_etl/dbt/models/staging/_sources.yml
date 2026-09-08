@@ -34,3 +34,18 @@ sources:
           Ecom pipeline only — POS payments never route. The routing
           decision lives in the routing_obj JSON, matched rules in
           matched_rules.
+      - name: checkout_session__checkout_sessions
+        description: >
+          One row per hosted checkout session (checkout-session-service,
+          its own database). No FK to payments in either direction: the
+          verified link is (merchant_id, order_id) -> payments, order
+          grain (nb 026). status is written lazily at source. PII-dense
+          (customer/metadata/order_data JSONB, payment_url, tokenised
+          redirect_urls): staging exposes a strict allowlist
+          (docs/schema-management.md §1).
+      - name: business_management__channels
+        description: >
+          Per-merchant sales channels (POS store, ecom API / hosted
+          checkout / payment link), `replace` disposition. id is what
+          payments.channel_id and checkout_sessions.channel_id reference;
+          business_id -> business_entities.id (the source PK).
