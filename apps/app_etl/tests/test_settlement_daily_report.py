@@ -4,6 +4,7 @@ the merchant-report and notify-job tests).
 
 Coverage: one poisoned fixture per gate check in run_checks, both gate
 waivers (they fire only for their own id, and never in silence), the
+NULL-parent_payment_id fallback through the operation, the
 informational notes, the refund row's original-payment semantics in
 build_report, the leftover payment-grain path, the file writers, and the
 seed-lockstep guard for the incident exclusion list.
@@ -94,6 +95,7 @@ def _spine() -> pd.DataFrame:
             "merchant_name": ["Merchant One"] * 4,
             "op_resolved": [True, True, True, True],
             "payment_resolved": [True, True, True, True],
+            "payment_resolved_via_op": [False, False, False, False],
             "payment_merchant_id": [M1, M1, M1, M1],
             "payment_status": ["REFUNDED", "REFUNDED", "FAILED", "CAPTURED"],
             "payment_currency": ["SAR", "SAR", "SAR", "SAR"],
@@ -337,6 +339,29 @@ def test_waived_adjustment_entry_passes_only_for_its_own_id():
     both = adjustment.copy()
     both.loc[both["settlement_transaction_id"] == "t2", "op_resolved"] = False
     assert any("1 rows with no payment_operation" in f for f in run_checks(both))
+
+
+def test_null_parent_resolved_via_operation_passes_and_is_noted():
+    # A settlement row whose parent_payment_id is NULL still resolves its
+    # payment through the operation (first case 2026-09-09). The gate
+    # stays quiet, and the notes name the row so the upstream loss of
+    # the payment id never goes unreported.
+    spine, _ = _prepared_spine()
+    assert not any(
+        "NULL parent_payment_id" in n for n in informational_notes(spine, _day_ops())
+    )
+
+    via_op = spine.copy()
+    via_op.loc[
+        via_op["settlement_transaction_id"] == "t1", "payment_resolved_via_op"
+    ] = True
+    assert run_checks(via_op) == []
+    notes = "\n".join(informational_notes(via_op, _day_ops()))
+    assert (
+        "1 row(s) with NULL parent_payment_id resolved through the "
+        "operation's payment_id" in notes
+    )
+    assert "['t1']" in notes
 
 
 def test_waived_window_tieout_passes_only_for_its_own_window():

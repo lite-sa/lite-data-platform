@@ -13,8 +13,14 @@ Grain: one row per INCLUDED settlement transaction of the day's windows,
 plus one payment-grain row for each of the day's payments with no such
 transaction (declines and failures, sales not yet booked, voided sales).
 Payment operations are never rows here — they resolve enrichment
-(RRN / STAN / TID) and feed the gate. A payment appears twice only when a
-refund books: the sale row plus the negative refund row.
+(RRN / STAN / TID) and feed the gate. Since 2026-09-10 they also resolve
+the payment when a settlement row's `parent_payment_id` is NULL: the
+first such row (2026-09-09, a POS capture whose PaymentStatusChanged
+event reached the pricing engine without its payment id) still carried
+a valid `external_reference_id`, and op -> payment is the verified
+contract, so the row ships fully attributed and the notes name it; only
+a row that resolves neither way blocks. A payment appears twice only
+when a refund books: the sale row plus the negative refund row.
 
 Cutover 2026-08-31: this module replaced merchant_daily_report (the
 payments-created v1) as the sole producer of the delivered per-merchant
@@ -239,7 +245,9 @@ def fetch_window_transactions(
     flips the sale's row in place; filtering REMOVED in SQL would hide it
     from the checks). Enrichment per the verified contract:
     `external_reference_id` -> the operation, `parent_payment_id` -> the
-    payment (for a refund row: the ORIGINAL payment, deliberately),
+    payment (for a refund row: the ORIGINAL payment, deliberately), with
+    the operation's `payment_id` as the fallback when `parent_payment_id`
+    is NULL (`payment_resolved_via_op` flags those rows for the notes),
     channels -> display name, merchant_directory -> merchant name.
     Incident-excluded payments stay in the spine so the per-window
     tie-out sees complete windows; build_report drops them from the file.
@@ -252,7 +260,7 @@ def fetch_window_transactions(
     query = f"""
         select
             t.id as settlement_transaction_id,
-            t.parent_payment_id as payment_id,
+            coalesce(t.parent_payment_id, o.payment_id) as payment_id,
             t.external_reference_id as operation_id,
             t.operation,
             t.status as settlement_status,
@@ -276,6 +284,8 @@ def fetch_window_transactions(
             b.name as merchant_name,
             o.id is not null as op_resolved,
             p.id is not null as payment_resolved,
+            t.parent_payment_id is null and p.id is not null
+                as payment_resolved_via_op,
             p.merchant_id as payment_merchant_id,
             p.status as payment_status,
             p.currency as payment_currency,
@@ -296,7 +306,7 @@ def fetch_window_transactions(
         left join {latest_version(f"{raw}.payment_v2__payment_operations")} o
             on o.id = t.external_reference_id
         left join {latest_version(f"{raw}.payment_v2__payments")} p
-            on p.id = t.parent_payment_id
+            on p.id = coalesce(t.parent_payment_id, o.payment_id)
         left join {latest_version(f"{raw}.business_management__channels")} c
             on c.id = p.channel_id
         left join {latest_version(f"{raw}.business_management__business_entities")} cb
@@ -586,7 +596,7 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
     if no_payment.any():
         failures.append(
             f"{int(no_payment.sum())} rows with no "
-            "payment for parent_payment_id"
+            "payment for parent_payment_id (nor via the operation's payment_id)"
         )
 
     # Tenant guards: the window's merchant must be the payment's, and a
@@ -758,6 +768,20 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
         notes.append(
             f"WAIVED per-window tie-out for {waived_windows}: stuck HELD "
             "refund hold"
+        )
+    # The op fallback is not a waiver (the row is fully attributed), but
+    # every use means an upstream event lost its payment id: say so.
+    via_op = sorted(
+        set(spine.loc[
+            spine["payment_resolved_via_op"].fillna(False).astype(bool),
+            "settlement_transaction_id",
+        ])
+    )
+    if via_op:
+        notes.append(
+            f"{len(via_op)} row(s) with NULL parent_payment_id resolved "
+            "through the operation's payment_id (upstream event lost the "
+            f"payment id): {via_op[:5]}"
         )
     open_windows = spine.loc[
         ~spine["window_status"].isin(TERMINAL_WINDOW_STATUSES),
