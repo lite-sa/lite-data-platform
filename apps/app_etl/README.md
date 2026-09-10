@@ -142,7 +142,10 @@ column — the deny-by-default allowlist stance was reversed 2026-08-12
 (PII boundary = raw IAM + dbt staging column lists + staging-bucket
 lifecycle; each pipeline file's docstring keeps its trim map); the
 exported schema YAML under `schemas/` is the changelog. Rules:
-`docs/schema-management.md`.
+`docs/schema-management.md`. The trim map's consumer is the dbt litecore
+mirror (`dbt/models/litecore/`): the payment_v2, ledger, settlement and
+checkout_session tables, latest version per id, PII columns left out,
+built into `core` for the payments team in Metabase.
 
 jsonb/array source columns can't load into BigQuery from Parquet as a
 declared JSON type, so `bq_resource` sets `autodetect_schema` and they land

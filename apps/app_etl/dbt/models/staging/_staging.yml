@@ -56,27 +56,3 @@ models:
     columns:
       - name: merchant_id
         tests: [not_null, unique]
-
-  - name: stg_litecore__checkout_sessions
-    description: >
-      Latest version per hosted checkout session (grain:
-      checkout_session_id). PII allowlist: the customer, metadata and
-      order_data JSONB blobs and payment_url never pass this view
-      (presence booleans only); redirect_urls passes as hosts only;
-      idempotency_key passes as a sha256. The only link to payments is
-      (merchant_id, order_id).
-    columns:
-      - name: checkout_session_id
-        tests: [not_null, unique]
-
-  - name: stg_litecore__channels
-    description: >
-      Latest version per sales channel (grain: channel_id), what
-      payments.channel_id and checkout_sessions.channel_id point at.
-      Allowlist: name, type/sub_type, status, is_default. Addresses,
-      lat/long, receipt footers, terminal counts and operator ids stay
-      behind raw IAM. Raw is `replace` disposition, so the dedup is
-      defensive.
-    columns:
-      - name: channel_id
-        tests: [not_null, unique]

@@ -49,3 +49,43 @@ sources:
           checkout / payment link), `replace` disposition. id is what
           payments.channel_id and checkout_sessions.channel_id reference;
           business_id -> business_entities.id (the source PK).
+      # Declared 2026-09-09 for the litecore mirror (models/litecore/); no
+      # staging view reads them.
+      - name: payment_v2__payment_link
+        description: >
+          Payment links (uuid ids). customer, metadata and description are
+          payer contact and merchant free text; public_token is the link's
+          capability token; created_by a staff id (trim map).
+      - name: payment_v2__payment_link_consumption
+        description: >
+          One row per payment-link open; link_id -> payment_link.id.
+          ip_address, user_agent, session_id and hosted_url are the trim
+          map.
+      - name: ledger__account
+        description: >
+          Ledger accounts, merchant and pool. Incremental on updated_at so
+          raw keeps the balance trajectory. account_number, virtual_iban
+          and opened_by are the trim map.
+      - name: ledger__entry
+        description: >
+          Ledger entries; account_id -> ledger__account.id,
+          external_reference_id -> the payment operation or settlement
+          leg that caused the entry. No PII.
+      - name: settlement__account
+        description: >
+          Settlement accounts per merchant, incremental so status changes
+          and soft deletes keep history. created_by, updated_by are the
+          trim map.
+      - name: settlement__settlement_window
+        description: >
+          Settlement windows (a merchant's payout batch). created_by,
+          updated_by are the trim map.
+      - name: settlement__instruction
+        description: >
+          Payout instructions; settlement_window_id -> settlement_window.id.
+          No PII.
+      - name: settlement__transaction
+        description: >
+          Settlement legs; parent_payment_id -> payments.id,
+          external_reference_id -> payment_operations.id. fees is jsonb[]
+          landed as a JSON-array string. No PII.

@@ -34,3 +34,23 @@ models:
     # (profiles.yml).
     marts:
       +materialized: table
+      # Descriptions from the _*.yml files land on the BigQuery tables and
+      # columns, which is what Metabase shows. BigQuery caps a column
+      # description at 1,024 characters and the build fails past it;
+      # tests/test_dbt_docs.py gates every description at that length.
+      # Long-form notes live in .claude/skills/metabase-data-questions/.
+      +persist_docs:
+        relation: true
+        columns: true
+    # The litecore mirror: one table per raw table of the payment_v2,
+    # ledger, settlement and checkout_session databases, latest version
+    # per id, PII columns removed (docs/schema-management.md §1),
+    # published to the payments team in Metabase. It builds into the same
+    # dataset as everything else (BQ_DATASET_CORE): the CISO approval for
+    # Metabase covers READER on `core` only, and the redaction is what
+    # makes a raw copy publishable there. No +schema, no routing.
+    litecore:
+      +materialized: table
+      +persist_docs:
+        relation: true
+        columns: true

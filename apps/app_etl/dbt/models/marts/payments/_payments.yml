@@ -1,91 +1,64 @@
+# Every description here lands on the BigQuery table or column
+# (persist_docs) and Metabase shows it: short, plain, under 1,024
+# characters (tests/test_dbt_docs.py). Provenance, dated rulings and
+# incident notes live in .claude/skills/metabase-data-questions/reference.md.
 version: 2
 
 models:
   - name: payments
     description: >
-      One row per payment — the metric-ready payment facts (nb 023's
-      build_payment_facts ported to SQL; supersedes the nb 018 phase-1
-      cut). Entry-mode classification across every pipeline, card facts
-      from instrument_data, the decision from the op log, 3DS and
-      routing milestone clocks, outcome + failure taxonomy
-      (decline_code_map seed), and the milestone funnel string. FULL
-      REBUILD from the staging views on every dbt build — not
-      incremental: every run restates all history from raw's latest
-      versions, so late ops and refunds are picked up automatically and
-      reruns are idempotent (the graduation path to incremental merge is
-      in the model header). Test merchants (seed: test_merchants) are
-      excluded. No PII — reads only the staging column allowlists.
+      One row per payment: merchant, channel and entry mode, card facts,
+      the decision and the gateway that made it, 3DS and routing
+      milestones, outcome and failure category, booked amounts. Rebuilt in
+      full every morning from the staging views. Test merchants and
+      incident-excluded payments are removed. No PII. Columns ending in
+      _minor or _total are minor units; amount, captured_amount,
+      refunded_amount and reversed_amount are major units of currency.
     columns:
       - name: payment_id
-        description: Grain.
+        description: Grain. The LiteCore payment id.
         tests: [not_null, unique]
       - name: merchant_id
+        description: The merchant (business_entities.business_id).
         tests: [not_null]
       - name: merchant_name
         description: >
-          A warn here is the drift detector for the business_id join
-          contract — nulls mean business_entities lost the merchant or
-          the snapshot ingestion is lagging a newly onboarded one.
+          Merchant display name. NULL when the merchant snapshot lags a
+          newly onboarded merchant; group by merchant_id as well.
         tests:
           - not_null:
               config:
                 severity: warn
-      - name: created_at
-        description: >
-          Partition column (UTC). Filter on this one for partition
-          pruning — filters on created_at_local scan the whole table.
       - name: status
         description: >
-          Canonical status — source_status overridden to FAILED only for
-          stuck-PENDING declines (PENDING with failure ops and no
-          success op; the 8/11–15 POS incident population, a no-op for
-          receipts after the POS-622 source fix).
+          Payment state as at source, except PENDING with failed
+          operations and no success reads as FAILED.
         tests: [not_null]
       - name: source_status
-        description: The payment FSM status exactly as at source.
+        description: Payment state exactly as at source.
         tests: [not_null]
       - name: outcome
         description: >
-          The three-bucket partition every auth rate reads: authorized
-          (a decision-family success op exists ⇔ authorized_at), declined
-          (decision failure and never a success), no_decision (no
-          decision op — parked or abandoned). The partition and the
-          authorized ⇔ authorized_at equivalence are singular tests.
+          authorized, declined or no_decision. The column every auth rate
+          reads. authorized means a decision success exists (authorized_at
+          is set); declined means a decision failure and never a success;
+          no_decision means no decision operation at all.
         tests:
           - not_null
           - accepted_values:
               values: [authorized, declined, no_decision]
-      - name: currency
-        description: >
-          The new-currency tripwire: a warn here means a currency with no
-          agreed handling entered the data. Two decisions before adding
-          it to the list — is its ISO 4217 exponent covered by the
-          minor→major divisor (extend it for exp-3/exp-0), and how may
-          consumers that sum across currencies treat it.
-        tests:
-          - not_null
-          - accepted_values:
-              values: [SAR]
-              config:
-                severity: warn
       - name: channel
         description: >
-          The pipeline that ran: channel_type where present (source
-          column since 2026-08-18), else the op witness — any op with a
-          terminal_id is pos, ops without one (or a threeds row) is
-          ecom; unknown when nothing witnesses either.
+          pos or ecom, unknown when nothing witnesses either. channel_type
+          where present, else inferred from the operations.
         tests:
           - not_null
           - accepted_values:
               values: [pos, ecom, unknown]
       - name: entry_mode
         description: >
-          How the card reached LiteCore (entry-mode doc §1, first-match
-          waterfall within the ecom pipeline). Single 'pos' until
-          terminal_management is ingested. MOTO wins over payment_link —
-          a link carries a processing_type, and a link-delivered MOTO
-          payment is a MOTO payment (ruled 2026-08-24); prod MOTO
-          traffic today arrives via links.
+          How the card reached LiteCore. First match wins; moto wins over
+          payment_link.
         tests:
           - not_null
           - accepted_values:
@@ -98,180 +71,302 @@ models:
                 - stored_credential_cit
                 - stored_credential_mit
                 - unknown
+      - name: channel_type
+        description: >
+          Source value, IN-PERSON or ECOM; NULL on payments before
+          2026-08-18. Prefer channel.
+      - name: processing_type
+        description: Source value, REGULAR or MOTO; NULL on POS.
+      - name: payment_method
+        description: Source value, CARD or APPLE_PAY; NULL on POS.
+      - name: capture_mode
+        description: >
+          Source value. INSTANT, the only value today, means the ecom
+          authorize also books the funds.
+      - name: via_payment_link
+        description: True when the payment came through a payment link, whatever the entry_mode.
+      - name: order_id
+        description: >
+          The merchant's order reference. Joins checkout_session__checkout_sessions on
+          (merchant_id, order_id); several payments can share one.
       - name: card_brand
         description: >
-          From instrument_data (MADA / VISA / MASTERCARD / UNKNOWN).
-          NULL before the source column's backfill horizon (~2026-08-17)
-          and on payments that never got an instrument — brand splits
-          only mean something from then on.
-      - name: gateway
+          MADA, VISA, MASTERCARD or UNKNOWN. NULL before the 2026-08-17
+          backfill and on payments with no instrument.
+      - name: instrument_type
+        description: CARD or APPLE_PAY; NULL when the payment has no instrument.
+      - name: card_last_four
+        description: Last four digits of the card, as printed on receipts.
+      - name: future_usage
+        description: Stored-credential intent declared on the instrument; NULL for one-off payments.
+      - name: card_expiry_year
+        description: Card expiry year from the instrument.
+      - name: card_expiry_month
+        description: Card expiry month from the instrument.
+      - name: amount_minor
+        description: Requested amount in minor units (halalas for SAR).
+      - name: amount
+        description: Requested amount in major units of currency.
+      - name: currency
         description: >
-          The connector that produced the decision — the success op's
-          connector, else the final failure's. NULL when no connector
-          ever answered. This replaced first_op_connector (first-routed
-          attribution) in the nb 023 port; routed_connector keeps the
-          routing decision.
-      - name: gateway_reached
-        description: >
-          The net-auth-rate flag: authorized, or declined at a stage
-          where the gateway/provider produced (or errored while
-          producing) a verdict. Net = authorized / (authorized +
-          declined-and-gateway_reached); everything upstream —
-          validation, risk, routing, 3DS, device errors, terminal
-          cancellations — drops out of the denominator.
-        tests: [not_null]
-      - name: failure_category
-        description: >
-          Per-pipeline decline category (nb 023 §7): the ecom reason
-          strings (risk/routing/3DS/gateway, 022 §5) with the
-          connector-null fallback, and the POS discriminators in doc
-          order (TMS reason / device error / receipt outcome / response
-          code). Set whenever a decision failure exists (failed_at) —
-          retried auths that later succeeded carry one too — and never
-          NULL when outcome = declined (singular test). Filter on
-          outcome = declined for decline analyses.
-      - name: failure_stage
-        description: >
-          failure_category collapsed to the shared stage vocabulary:
-          validation / risk / routing / threeds / gateway_declined /
-          gateway_error / device / cancelled. The lever map for product:
-          threeds losses are checkout work, gateway_declined is issuer
-          behaviour, risk and validation are our own gates.
-      - name: decline_reason
-        description: >
-          Mapped from failure_response_code via the decline_code_map
-          seed — the highest-volume codes only. NULL means unmapped (TSP
-          196 deliberately so), not absent.
-      - name: milestones
-        description: >
-          Witnessed milestones in canonical pipeline order, one
-          vocabulary across entry modes ("created -> routed -> 3ds ->
-          gateway_called -> authorized -> captured"). Token order is
-          fixed, not chronological; 'failed' is terminal-only (a decision
-          failure on a payment that also succeeded stays out).
-        tests: [not_null]
+          ISO 4217 code. SAR is the only value today; a new value fails a
+          warn test until its handling is agreed.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [SAR]
+              config:
+                severity: warn
       - name: captured_total
         description: >
-          Minor units booked as captured — CAPTURE-family successes
-          (PURCHASE receipts normalized in), plus the ecom INSTANT
-          single-message fold (the AUTHORIZE books the funds, nb 017).
-          0 when nothing booked.
+          Minor units booked as captured: capture successes plus the ecom
+          INSTANT authorize. 0 when nothing booked.
         tests: [not_null]
+      - name: captured_amount
+        description: captured_total in major units.
       - name: refunded_total
         description: Minor units successfully refunded; 0 when none.
         tests: [not_null]
+      - name: refunded_amount
+        description: refunded_total in major units.
       - name: reversed_total
-        description: >
-          Minor units successfully reversed (POS REVERSE receipts);
-          0 when none.
+        description: Minor units successfully reversed (POS); 0 when none.
         tests: [not_null]
+      - name: reversed_amount
+        description: reversed_total in major units.
+      - name: channel_id
+        description: The sales channel (business_management channels.id).
+      - name: created_at
+        description: >
+          Payment creation, UTC. Partition column: filter on it for
+          partition pruning.
+      - name: created_at_local
+        description: created_at in Asia/Riyadh (DATETIME). DATE(created_at_local) is the business day.
+      - name: source_updated_at
+        description: Last update of the payment row at source, UTC.
+      - name: milestones
+        description: >
+          Witnessed milestones in fixed pipeline order, joined by ' -> '
+          (created -> routed -> 3ds -> gateway_called -> authorized ->
+          captured ...). failed appears only when the payment never
+          authorized.
+        tests: [not_null]
+      - name: routed_at
+        description: First routing evaluation, UTC. Ecom only.
+      - name: threeds_started_at
+        description: Last 3DS attempt created, UTC.
+      - name: challenge_presented_at
+        description: Issuer challenge shown to the shopper, UTC.
+      - name: challenge_completed_at
+        description: Challenge ended with AUTHENTICATED or FAILED, UTC.
+      - name: challenge_abandoned_at
+        description: 3DS attempt expired without an answer, UTC.
+      - name: authenticated_at
+        description: 3DS trans_status Y or A reached, UTC.
+      - name: threeds_failed_at
+        description: 3DS attempt ended FAILED, UTC.
+      - name: gateway_called_at
+        description: Decision call sent to the gateway (its end minus processing time), UTC. Ecom only.
+      - name: authorized_at
+        description: First decision success, UTC. NULL unless outcome is authorized.
+      - name: captured_at
+        description: >
+          Funds booked, UTC: the ecom INSTANT authorize, else the first capture success.
+      - name: extended_at
+        description: First successful authorization extension, UTC.
+      - name: voided_at
+        description: First successful void, UTC.
+      - name: reversed_at
+        description: First successful POS reversal, UTC.
+      - name: refunded_at
+        description: First successful refund, UTC.
+      - name: last_refunded_at
+        description: Last successful refund, UTC.
+      - name: failed_at
+        description: Last decision failure, UTC. Set on declined payments and on authorized ones that retried.
+      - name: gateway
+        description: >
+          The connector that produced the decision: the success
+          operation's, else the last failure's. NULL when no connector
+          answered. TSP is the POS provider, mpgs the ecom gateway.
+      - name: auth_transaction_id
+        description: The gateway's transaction id on the authorizing operation.
+      - name: auth_initiated_by
+        description: Who initiated the authorizing operation, as at source.
+      - name: auth_external_op
+        description: POS receipt operation type of the authorizing operation.
+      - name: auth_verification
+        description: POS cardholder verification method of the authorizing operation.
+      - name: routed_connector
+        description: Connector chosen by the first routing evaluation. gateway keeps the decision connector.
+      - name: routed_provider_config
+        description: Provider configuration chosen by routing.
+      - name: routed_via_fallback
+        description: True when routing fell through to the profile fallback.
+      - name: n_routing_rows
+        description: Routing evaluations for the payment; 1 on the happy path, more on retries.
+      - name: n_routing_not_completed
+        description: Routing evaluations that did not reach COMPLETED.
+      - name: decision_duration_ms
+        description: Processing time of the decision operation, milliseconds.
+      - name: gateway_reached
+        description: >
+          True when the gateway or POS provider produced the verdict, or
+          errored while producing it: every authorized payment plus
+          gateway-stage declines. The net auth rate divides authorized by
+          gateway_reached.
+        tests: [not_null]
+      - name: failure_category
+        description: >
+          Why the payment declined. Ecom: risk_error, risk_rejected,
+          routing_error, threeds_failed, threeds_expired_or_error,
+          gateway_declined, validation, gateway_no_verdict. POS:
+          pos_validation, pos_device_error, pos_cancelled,
+          pos_provider_declined, pos_no_verdict. NULL when no decision
+          failure exists. Filter outcome = declined for decline analyses.
+      - name: failure_stage
+        description: >
+          failure_category grouped: validation, risk, routing, threeds,
+          gateway_declined, gateway_error, device, cancelled. threeds
+          losses are checkout work; gateway_declined is issuer behaviour.
+      - name: decline_reason
+        description: >
+          Label for failure_response_code from the decline_code_map seed.
+          NULL means an unmapped code, not the absence of a decline.
+      - name: failure_reason
+        description: The failing operation's reason string as at source.
+      - name: failure_connector
+        description: Connector of the last decision failure.
+      - name: failure_response_code
+        description: Gateway or provider response code of the last decision failure.
+      - name: failure_response_message
+        description: Gateway or provider response message of the last decision failure.
+      - name: failure_http_status
+        description: HTTP status the connector returned on the last decision failure.
+      - name: failure_outcome
+        description: POS receipt outcome of the last decision failure, for example CANCELLED.
+      - name: failure_initiated_by
+        description: Who initiated the failing operation, as at source.
+      - name: has_risk_result
+        description: A risk result exists on the payment.
+      - name: risk_allowed
+        description: The risk engine allowed the payment.
+      - name: risk_requires_threeds
+        description: The risk engine required 3DS.
+      - name: has_routing_result
+        description: A routing result exists on the payment.
+      - name: has_threeds_result
+        description: A 3DS result exists on the payment.
+      - name: has_gateway_reference
+        description: The payment carries a gateway reference id.
+      - name: n_ops
+        description: Operations on the payment, all types and statuses.
+      - name: n_success_ops
+        description: Operations with status SUCCESS.
+      - name: n_failure_ops
+        description: Operations with status FAILURE.
+      - name: n_pending_ops
+        description: Operations with status PENDING.
+      - name: n_decision_failures
+        description: Decision failures (authorize on ecom; authorize or capture on POS).
+      - name: n_capture_success
+        description: Successful capture operations.
+      - name: n_unknown_op_types
+        description: Operations with a type outside the known set. Non-zero is a tripwire.
+      - name: retried_auth
+        description: Authorized after at least one decision failure.
+      - name: n_refunds
+        description: Successful refunds.
+      - name: n_reversals
+        description: Successful POS reversals.
+      - name: n_threeds_attempts
+        description: 3DS attempts on the payment.
+      - name: has_threeds
+        description: At least one 3DS attempt exists. Filter on it for 3DS analyses.
+      - name: threeds_status
+        description: Last 3DS attempt's status, AUTHENTICATED, EXPIRED or FAILED; NULL when no 3DS ran.
+      - name: threeds_trans_status
+        description: EMV 3DS transStatus of the last attempt; Y or A is authenticated.
+      - name: threeds_eci
+        description: ECI of the last 3DS attempt.
+      - name: authentication_scheme
+        description: VISA or MASTERCARD on the last 3DS attempt.
       - name: threeds_authenticated
         description: >
-          Protocol verdict transStatus in (Y, A) of the last 3DS attempt;
-          false includes has_threeds=false — filter on has_threeds for
-          3DS analyses. Agreement with the FSM is a singular test.
+          trans_status Y or A on the last attempt. False includes payments
+          without 3DS; filter on has_threeds.
+      - name: threeds_challenge_mandated
+        description: The issuer mandated a challenge on the last attempt.
+      - name: threeds_abandoned
+        description: The last attempt expired without an answer.
+      - name: threeds_duration_s
+        description: Seconds from the last attempt's creation to its final status; NULL for expired attempts.
 
   - name: payments_daily_summary
     description: >
-      Daily payment funnel — one row per payment_creation_date ×
-      merchant × channel × entry_mode × gateway × card_brand × currency
-      × payment_method, read from the payments fact (never staging/ops)
-      and fully restated with it every run. entry_mode and card_brand
-      joined the grain 2026-08-24 (nb 023 port); gateway switched from
-      first-routed to decision-connector attribution in the same pass.
-      authorized/declined/no_decision partition request_count and
-      sum(request_count) reconciles to the fact table's row count — both
-      singular tests, alongside the grain test. Amounts are major units
-      (NUMERIC) in the row's own currency.
+      Daily payment funnel: one row per payment_creation_date × merchant ×
+      channel × entry_mode × gateway × card_brand × currency ×
+      payment_method. Built from the payments table and restated in full
+      every morning. The three outcome counts partition request_count.
+      Amounts are major units of currency, attributed to the payment's
+      creation day.
     columns:
       - name: payment_creation_date
-        description: >
-          The payment's created_at as a local calendar date
-          (var local_timezone) — the activity date, not a run date.
-          Partition key.
+        description: The payment's creation date in Asia/Riyadh. Partition column.
         tests: [not_null]
       - name: merchant_id
+        description: The merchant (business_entities.business_id).
         tests: [not_null]
       - name: merchant_name
-        description: >
-          Denormalized from the fact table, same drift-detector warn as
-          there; a null groups as its own value but cannot fan out the
-          grain — merchant_id is in it.
+        description: Merchant display name from the payments table; NULL when the snapshot lagged.
         tests:
           - not_null:
               config:
                 severity: warn
       - name: channel
+        description: pos, ecom or unknown.
         tests:
           - not_null
           - accepted_values:
               values: [pos, ecom, unknown]
       - name: entry_mode
-        description: >
-          The fact's entry_mode — the first slice of any auth-rate
-          story: pos, wallet, card and link decline for different
-          reasons and to different owners.
+        description: How the card reached LiteCore; the first slice of any auth-rate story.
         tests: [not_null]
       - name: gateway
-        description: >
-          The fact's decision connector — the gateway that said the
-          final yes or no; not_routed when no connector ever answered.
-          (Until 2026-08-24 this column carried first_op_connector, the
-          first-routed attribution — dashboards comparing across that
-          date compare slightly different things on retried payments.)
+        description: The connector that made the decision; not_routed when none answered.
         tests: [not_null]
       - name: card_brand
-        description: >
-          The fact's card_brand; unknown where NULL — which is all rows
-          before the instrument_data backfill horizon (~2026-08-17), so
-          filter the date range before reading brand splits.
+        description: MADA, VISA, MASTERCARD, UNKNOWN, or unknown where the fact has NULL.
         tests: [not_null]
       - name: currency
+        description: ISO 4217 code of every amount in the row.
         tests: [not_null]
       - name: payment_method
-        description: unknown when the source left it null.
+        description: CARD, APPLE_PAY, or unknown where the source left it NULL.
         tests: [not_null]
       - name: request_count
-        description: >
-          Payment attempts in the group; authorized_count +
-          declined_count + no_decision_count partitions it (singular
-          test).
+        description: Payment attempts in the group.
         tests: [not_null]
       - name: authorized_count
         description: Attempts with outcome authorized.
       - name: declined_count
         description: Attempts with outcome declined.
       - name: no_decision_count
-        description: No decision op at all — never reached a verdict.
+        description: Attempts that never reached a verdict.
       - name: gateway_declined_count
         description: >
-          Declines where the gateway/provider actually decided
-          (gateway_reached) — the net-auth-rate denominator's decline
-          half: net = authorized / (authorized + gateway_declined).
-          Always ≤ declined_count.
+          Declines where the gateway or provider decided (gateway_reached).
+          Net auth rate = authorized / (authorized + gateway_declined).
       - name: request_amount
-        description: >
-          Summed major-unit amount of all attempts. The null canary — a
-          null here means a source amount went null.
+        description: Major-unit amount of all attempts.
         tests: [not_null]
       - name: authorized_amount
-        description: Major-unit amount summed over authorized attempts only.
+        description: Major-unit amount of authorized attempts.
       - name: declined_amount
-        description: >
-          Major-unit amount summed over declined attempts only. The
-          no_decision bucket's amount is the remainder (request_amount −
-          authorized_amount − declined_amount) — exact, since the three
-          buckets partition the rows.
+        description: Major-unit amount of declined attempts.
       - name: captured_amount
-        description: >
-          Booked funds summed (INSTANT AUTHORIZE fold), major units,
-          attributed to the payment's creation date — not the capture
-          day.
+        description: Booked funds, major units, on the payment's creation day.
       - name: refunded_amount
-        description: >
-          Refunds summed, major units, attributed to the payment's
-          creation date — not the refund day.
+        description: Refunds, major units, on the payment's creation day.
       - name: reversed_amount
-        description: >
-          POS reversals summed, major units, same creation-date
-          attribution.
+        description: POS reversals, major units, on the payment's creation day.
