@@ -52,6 +52,23 @@ deltas that remain are the designed ones
 - A same-day voided sale (row flipped to REMOVED) ships as a
   payment-grain row with empty settlement columns, exactly like the old
   spine after its REMOVED filter.
+- A claw-back (settlement `operation = reversal_adjustment`, LiteCore
+  CTR-921, first seen 2026-09-14) is a negative row of its own day
+  referencing the original payment, like a refund. Settlement books it
+  when a reversal lands on a sale whose window already paid out: the
+  sale row flips to REMOVED as before, and a new row for minus the
+  sale's amount and settled_amount goes into the merchant's current
+  OPENED window. Its `external_reference_id` is the reversed capture's
+  operation id plus `:reversal-adjustment`, it is born ACTIVE (no
+  `hold_at`), and it carries no `fees` of its own. The spine resolves
+  the operation through the stripped id and joins the original sale row;
+  `derive_adjustment_fees` fills the fee columns with the original fees
+  negated, because the ledger returned mdr and vat on the reversal, so
+  the delivered fee columns and the row tie-out both hold
+  (`amount - fees == settled_amount`). The gate requires the original
+  sale row to exist and be REMOVED and the amounts to mirror it; the
+  refund-shape and operation/sign rules know the operation. Never waive
+  these by id (notebooks/041).
 
 The gate is all-or-nothing per run: `run_checks` reads the whole spine
 before the merchant split, so one bad row blocks every merchant's file for
@@ -128,6 +145,15 @@ BASE_FEE_TYPES = ("mdr", "vat", "flat")
 BASE_FEE_COLS = [f"fee_{t}_minor" for t in BASE_FEE_TYPES]
 
 TERMINAL_WINDOW_STATUSES = ("SUCCESS", "FAILED")
+
+# Claw-back rows (LiteCore settlement-service CTR-921, 2026-09-03):
+# `operation` value and the suffix the service appends to the reversed
+# capture's operation id to build the row's external_reference_id
+# (transaction-window-remove.service.ts, REVERSAL_ADJUSTMENT_SUFFIX).
+REVERSAL_ADJUSTMENT = "reversal_adjustment"
+REVERSAL_ADJUSTMENT_SUFFIX = ":reversal-adjustment"
+# The operations whose rows are negative by construction.
+NEGATIVE_OPERATIONS = ("refund", REVERSAL_ADJUSTMENT)
 
 # Gate waivers. Both are pinned to specific ids investigated 2026-09-01
 # and ported here from notebooks/028 on 2026-09-05, so the daily job and
@@ -248,7 +274,13 @@ def fetch_window_transactions(
     payment (for a refund row: the ORIGINAL payment, deliberately), with
     the operation's `payment_id` as the fallback when `parent_payment_id`
     is NULL (`payment_resolved_via_op` flags those rows for the notes),
-    channels -> display name, merchant_directory -> merchant name.
+    channels -> display name, merchant_directory -> merchant name. A
+    claw-back row (`operation = reversal_adjustment`) resolves its
+    operation through `original_operation_id` (the reference with the
+    `:reversal-adjustment` suffix stripped) and also joins the original
+    sale row it mirrors (`original_txn_status`, `original_amount_minor`,
+    `original_settled_amount_minor`, `original_fees`), which the gate
+    and `derive_adjustment_fees` read; NULL on every other row.
     Incident-excluded payments stay in the spine so the per-window
     tie-out sees complete windows; build_report drops them from the file.
 
@@ -258,10 +290,37 @@ def fetch_window_transactions(
     whole platform, test merchants included.
     """
     query = f"""
+        with txn as (
+            select
+                t.*,
+                t.operation = @adjustment_operation as is_reversal_adjustment,
+                if(
+                    ends_with(t.external_reference_id, @adjustment_suffix),
+                    left(
+                        t.external_reference_id,
+                        length(t.external_reference_id)
+                            - length(@adjustment_suffix)
+                    ),
+                    t.external_reference_id
+                ) as original_operation_id
+            from {latest_version(f"{raw}.settlement__transaction")} t
+        ),
+        original as (
+            -- The sale row a claw-back mirrors: same operation id, no
+            -- suffix. One per operation id (the earliest, should a retry
+            -- ever book two).
+            select external_reference_id, status, amount, settled_amount, fees
+            from {latest_version(f"{raw}.settlement__transaction")}
+            where operation is distinct from @adjustment_operation
+            qualify row_number() over (
+                partition by external_reference_id order by created_at
+            ) = 1
+        )
         select
             t.id as settlement_transaction_id,
             coalesce(t.parent_payment_id, o.payment_id) as payment_id,
             t.external_reference_id as operation_id,
+            t.original_operation_id,
             t.operation,
             t.status as settlement_status,
             t.status is distinct from 'REMOVED' as included_in_window,
@@ -286,6 +345,10 @@ def fetch_window_transactions(
             p.id is not null as payment_resolved,
             t.parent_payment_id is null and p.id is not null
                 as payment_resolved_via_op,
+            orig.status as original_txn_status,
+            orig.amount as original_amount_minor,
+            orig.settled_amount as original_settled_amount_minor,
+            orig.fees as original_fees,
             p.merchant_id as payment_merchant_id,
             p.status as payment_status,
             p.currency as payment_currency,
@@ -298,13 +361,16 @@ def fetch_window_transactions(
             p.created_at,
             c.name as channel_name,
             cb.business_id as channel_merchant_id
-        from {latest_version(f"{raw}.settlement__transaction")} t
+        from txn t
         join {latest_version(f"{raw}.settlement__settlement_window")} w
             on w.id = t.settlement_window_id
         left join {merchant_directory(raw)} b
             on b.business_id = w.merchant_id
         left join {latest_version(f"{raw}.payment_v2__payment_operations")} o
-            on o.id = t.external_reference_id
+            on o.id = t.original_operation_id
+        left join original orig
+            on t.is_reversal_adjustment
+            and orig.external_reference_id = t.original_operation_id
         left join {latest_version(f"{raw}.payment_v2__payments")} p
             on p.id = coalesce(t.parent_payment_id, o.payment_id)
         left join {latest_version(f"{raw}.business_management__channels")} c
@@ -323,6 +389,12 @@ def fetch_window_transactions(
             bigquery.ScalarQueryParameter("tz", "STRING", LOCAL_TIMEZONE),
             bigquery.ScalarQueryParameter("report_day", "DATE", report_day),
             bigquery.ScalarQueryParameter("end_day", "DATE", end_day or report_day),
+            bigquery.ScalarQueryParameter(
+                "adjustment_operation", "STRING", REVERSAL_ADJUSTMENT
+            ),
+            bigquery.ScalarQueryParameter(
+                "adjustment_suffix", "STRING", REVERSAL_ADJUSTMENT_SUFFIX
+            ),
         ]
     )
     return client.query(query, job_config=job_config).to_dataframe()
@@ -564,6 +636,40 @@ def dedupe_settlement(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return deduped, warnings
 
 
+def is_reversal_adjustment(spine: pd.DataFrame) -> pd.Series:
+    """Row mask of claw-back rows, from `operation` (the one source of
+    truth for the row shape; NULL on pre-0009 rows is never a claw-back).
+    """
+    return spine["operation"].fillna("").str.lower().eq(REVERSAL_ADJUSTMENT)
+
+
+def derive_adjustment_fees(spine: pd.DataFrame) -> pd.DataFrame:
+    """Pure: fill `fees` on claw-back rows from the original sale row,
+    negated. Settlement books the claw-back with `settled_amount` net of
+    the original fees but no `fees` of its own (CTR-921), while the
+    ledger returned mdr and vat on the reversal; negating the original
+    fees is what makes both the delivered fee columns and the row
+    tie-out hold. Rows that already carry fees, and rows whose original
+    is missing, are left alone (the gate blocks the latter). Sets
+    `fees_derived_from_original` for the notes. Runs before the pivot.
+    """
+    spine = spine.copy()
+    derive = (
+        is_reversal_adjustment(spine)
+        & spine["fees"].isna()
+        & spine["original_fees"].notna()
+    )
+    spine["fees_derived_from_original"] = derive
+
+    def negate(fees_json: str) -> str:
+        return json.dumps(
+            [{**fee, "amount": -int(fee["amount"])} for fee in json.loads(fees_json)]
+        )
+
+    spine.loc[derive, "fees"] = spine.loc[derive, "original_fees"].map(negate)
+    return spine
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -577,6 +683,7 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
     """
     failures: list[str] = []
     included = spine["included_in_window"].fillna(False).astype(bool)
+    adjustment = is_reversal_adjustment(spine)
 
     if spine["settlement_transaction_id"].duplicated().any():
         failures.append("duplicate settlement transaction ids after dedup")
@@ -639,18 +746,22 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
             "amount - fees == settled_amount"
         )
 
-    # Refund shape: every negative row was born HELD (hold_at set).
-    neg_no_hold = included & (spine["amount_minor"] < 0) & spine["hold_at"].isna()
+    # Refund shape: every negative row was born HELD (hold_at set). A
+    # claw-back is born ACTIVE, so it is exempt; its own contract is below.
+    neg_no_hold = (
+        included & (spine["amount_minor"] < 0) & spine["hold_at"].isna() & ~adjustment
+    )
     if neg_no_hold.any():
         failures.append(f"{int(neg_no_hold.sum())} negative rows without hold_at")
 
     # Operation/sign cross-check (operation exists since settlement
-    # migration 0009; NULL on older rows, never checked).
+    # migration 0009; NULL on older rows, never checked). Refunds and
+    # claw-backs are the negative operations.
     op_sign_bad = (
         included
         & spine["operation"].notna()
         & (
-            spine["operation"].str.lower().eq("refund")
+            spine["operation"].str.lower().isin(NEGATIVE_OPERATIONS)
             != spine["amount_minor"].lt(0)
         )
     )
@@ -658,6 +769,32 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
         failures.append(
             f"{int(op_sign_bad.sum())} included rows where operation and "
             "amount sign disagree"
+        )
+
+    # Claw-back contract (CTR-921): the row mirrors a sale row that the
+    # reversal flipped to REMOVED. No original, or an original still
+    # ACTIVE, is a row we cannot explain; amounts that do not mirror the
+    # original mean the service changed shape under us.
+    no_original = adjustment & ~spine["original_txn_status"].eq("REMOVED")
+    if no_original.any():
+        failures.append(
+            f"{int(no_original.sum())} reversal_adjustment rows whose "
+            "original sale row is missing or not REMOVED"
+        )
+    not_mirrored = (
+        adjustment
+        & spine["original_amount_minor"].notna()
+        & (
+            spine["amount_minor"].ne(-spine["original_amount_minor"])
+            | spine["settled_amount_minor"].ne(
+                -spine["original_settled_amount_minor"]
+            )
+        )
+    )
+    if not_mirrored.any():
+        failures.append(
+            f"{int(not_mirrored.sum())} reversal_adjustment rows whose "
+            "amounts do not mirror the original sale row"
         )
 
     # Per-window tie-out: included rows must sum to the window's own
@@ -782,6 +919,19 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
             f"{len(via_op)} row(s) with NULL parent_payment_id resolved "
             "through the operation's payment_id (upstream event lost the "
             f"payment id): {via_op[:5]}"
+        )
+    # A claw-back ships as an ordinary negative row of its day; say so,
+    # and say when its fee columns came from the original sale row.
+    clawbacks = spine.loc[is_reversal_adjustment(spine)]
+    if len(clawbacks):
+        derived = clawbacks.get(
+            "fees_derived_from_original", pd.Series(False, index=clawbacks.index)
+        )
+        notes.append(
+            f"{len(clawbacks)} reversal_adjustment row(s) (CTR-921 claw-back "
+            "of a reversal after payout), negative rows of this day; fees "
+            f"derived from the original sale row on {int(derived.sum())} "
+            f"of them: {sorted(clawbacks['settlement_transaction_id'])[:5]}"
         )
     open_windows = spine.loc[
         ~spine["window_status"].isin(TERMINAL_WINDOW_STATUSES),
@@ -1038,6 +1188,7 @@ def main(argv: list[str] | None = None) -> None:
     spine = fetch_window_transactions(
         client, raw, report_day, all_merchants=args.all_merchants
     )
+    spine = derive_adjustment_fees(spine)
     spine, fee_cols = pivot_fees_txn(spine)
     day_ops = fetch_refund_reverse_ops(
         client, raw, report_day, all_merchants=args.all_merchants

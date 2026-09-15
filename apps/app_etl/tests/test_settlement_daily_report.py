@@ -4,7 +4,9 @@ the merchant-report and notify-job tests).
 
 Coverage: one poisoned fixture per gate check in run_checks, both gate
 waivers (they fire only for their own id, and never in silence), the
-NULL-parent_payment_id fallback through the operation, the
+NULL-parent_payment_id fallback through the operation, the claw-back
+row shape (CTR-921 reversal_adjustment: fee derivation, its own
+contract, its exemptions, its note, its delivered row), the
 informational notes, the refund row's original-payment semantics in
 build_report, the leftover payment-grain path, the file writers, and the
 seed-lockstep guard for the incident exclusion list.
@@ -12,6 +14,7 @@ seed-lockstep guard for the incident exclusion list.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -26,6 +29,7 @@ from app_etl.export.settlement_daily_report import (
     build_payment_rows,
     build_report,
     dedupe_settlement,
+    derive_adjustment_fees,
     export_columns,
     informational_notes,
     merchant_slug,
@@ -115,12 +119,60 @@ def _spine() -> pd.DataFrame:
             ),
             "channel_name": ["SKEWRD", "SKEWRD", None, "SKEWRD"],
             "channel_merchant_id": [M1, M1, None, M1],
+            # The original sale row a claw-back mirrors; NULL on every
+            # other row shape.
+            "original_txn_status": [None] * 4,
+            "original_amount_minor": pd.array([None] * 4, dtype="Int64"),
+            "original_settled_amount_minor": pd.array([None] * 4, dtype="Int64"),
+            "original_fees": [None] * 4,
         }
     )
 
 
 def _prepared_spine() -> tuple[pd.DataFrame, list[str]]:
     return pivot_fees_txn(_spine())
+
+
+def _clawback_spine() -> pd.DataFrame:
+    # _spine() plus t5: a CTR-921 claw-back in w2 for payment p5, whose
+    # sale (1000 - 30 fees = 970) paid out in an earlier window and was
+    # reversed after payout. Booked as the service does: minus the sale's
+    # amount and settled_amount, no fees, no hold_at, ACTIVE, the reversed
+    # capture's op id with the ':reversal-adjustment' suffix, joined to
+    # the original sale row (REMOVED). w2 now sums to 700 - 970 = -270.
+    spine = _spine()
+    t5 = spine.iloc[[3]].copy()
+    t5["settlement_transaction_id"] = "t5"
+    t5["payment_id"] = "p5"
+    t5["operation_id"] = "op-5:reversal-adjustment"
+    t5["operation"] = "reversal_adjustment"
+    t5["settlement_status"] = "ACTIVE"
+    t5["included_in_window"] = True
+    t5["is_settled"] = False
+    t5["amount_minor"] = -1000
+    t5["settled_amount_minor"] = -970
+    t5["fees"] = None
+    t5["hold_at"] = pd.NaT
+    t5["txn_created_at"] = pd.Timestamp("2026-08-19 17:00:00+00:00")
+    t5["moved_across_days"] = False
+    t5["payment_status"] = "AUTHORIZATION_REVERSED"
+    t5["payment_instrument_id"] = "pi-5"
+    t5["instrument_data"] = '{"last_four":"3885","card_brand":"VISA"}'
+    t5["order_data"] = '{"reference":"ord-5"}'
+    t5["original_txn_status"] = "REMOVED"
+    t5["original_amount_minor"] = 1000
+    t5["original_settled_amount_minor"] = 970
+    # Amounts as strings, the way the source JSON carries them.
+    t5["original_fees"] = (
+        '[{"fee_type":"mdr","amount":"26"},{"fee_type":"vat","amount":"4"}]'
+    )
+    spine = pd.concat([spine, t5], ignore_index=True)
+    spine.loc[spine["settlement_window_id"] == "w2", "window_settled_amount_minor"] = -270
+    return spine
+
+
+def _prepared_clawback_spine() -> tuple[pd.DataFrame, list[str]]:
+    return pivot_fees_txn(derive_adjustment_fees(_clawback_spine()))
 
 
 def _day_ops() -> pd.DataFrame:
@@ -339,6 +391,108 @@ def test_waived_adjustment_entry_passes_only_for_its_own_id():
     both = adjustment.copy()
     both.loc[both["settlement_transaction_id"] == "t2", "op_resolved"] = False
     assert any("1 rows with no payment_operation" in f for f in run_checks(both))
+
+
+def test_derive_adjustment_fees_negates_the_original_fees_only_on_clawbacks():
+    spine = derive_adjustment_fees(_clawback_spine())
+    t5 = spine.loc[spine["settlement_transaction_id"] == "t5"].iloc[0]
+    assert t5["fees_derived_from_original"]
+    assert json.loads(t5["fees"]) == [
+        {"fee_type": "mdr", "amount": -26},
+        {"fee_type": "vat", "amount": -4},
+    ]
+    # Every other row keeps its own fees (or its own None).
+    others = spine.loc[spine["settlement_transaction_id"] != "t5"]
+    assert not others["fees_derived_from_original"].any()
+    assert others["fees"].tolist() == _spine()["fees"].tolist()
+
+    # A claw-back that already carries fees (should settlement start
+    # copying them) is left alone.
+    own_fees = _clawback_spine()
+    own_fees.loc[own_fees["settlement_transaction_id"] == "t5", "fees"] = (
+        '[{"fee_type":"mdr","amount":-26},{"fee_type":"vat","amount":-4}]'
+    )
+    kept = derive_adjustment_fees(own_fees)
+    assert not kept["fees_derived_from_original"].any()
+
+    # No original row: nothing to derive from, flag stays False, the gate
+    # blocks it (see the contract test).
+    orphan = _clawback_spine()
+    orphan.loc[orphan["settlement_transaction_id"] == "t5", "original_fees"] = None
+    assert not derive_adjustment_fees(orphan)["fees_derived_from_original"].any()
+
+
+def test_clawback_row_passes_the_gate_and_is_noted():
+    # The row is negative without hold_at and its operation is not
+    # 'refund': both rules know the shape. The derived fees make the row
+    # tie out (-1000 - (-30) == -970) and w2 sums to its restated total.
+    spine, _ = _prepared_clawback_spine()
+    assert run_checks(spine) == []
+    notes = "\n".join(informational_notes(spine, _day_ops()))
+    assert "1 reversal_adjustment row(s)" in notes
+    assert "fees derived from the original sale row on 1 of them" in notes
+    assert "['t5']" in notes
+    # Never in the notes when the day has none.
+    plain, _ = _prepared_spine()
+    quiet = "\n".join(informational_notes(plain, _day_ops()))
+    assert "reversal_adjustment" not in quiet
+
+
+def test_clawback_contract_blocks_without_a_removed_original():
+    # Original sale row still ACTIVE: the reversal never flipped it.
+    active = _clawback_spine()
+    active.loc[active["settlement_transaction_id"] == "t5", "original_txn_status"] = (
+        "ACTIVE"
+    )
+    prepared, _ = pivot_fees_txn(derive_adjustment_fees(active))
+    assert any("original sale row is missing or not REMOVED" in f for f in run_checks(prepared))
+
+    # No original at all (suffix on an unknown op id): blocked twice over,
+    # by the contract and by the tie-out no fees can be derived for.
+    orphan = _clawback_spine()
+    orphan.loc[
+        orphan["settlement_transaction_id"] == "t5",
+        ["original_txn_status", "original_amount_minor", "original_settled_amount_minor", "original_fees"],
+    ] = [None, pd.NA, pd.NA, None]
+    prepared, _ = pivot_fees_txn(derive_adjustment_fees(orphan))
+    failures = run_checks(prepared)
+    assert any("original sale row is missing or not REMOVED" in f for f in failures)
+    assert any("amount - fees" in f for f in failures)
+    assert not any("do not mirror" in f for f in failures)
+
+    # Amounts that do not mirror the original: the service changed shape.
+    skewed = _clawback_spine()
+    skewed.loc[skewed["settlement_transaction_id"] == "t5", "settled_amount_minor"] = -900
+    prepared, _ = pivot_fees_txn(derive_adjustment_fees(skewed))
+    assert any("do not mirror the original sale row" in f for f in run_checks(prepared))
+
+    # A positive claw-back is a sign violation, not a claw-back.
+    positive = _clawback_spine()
+    positive.loc[positive["settlement_transaction_id"] == "t5", ["amount_minor", "settled_amount_minor"]] = [1000, 970]
+    prepared, _ = pivot_fees_txn(derive_adjustment_fees(positive))
+    assert any("sign disagree" in f for f in run_checks(prepared))
+
+
+def test_clawback_exemptions_do_not_leak_to_refund_rows():
+    # The hold_at exemption is keyed on the operation: a refund row born
+    # without a hold still blocks beside a passing claw-back.
+    spine = _clawback_spine()
+    spine.loc[spine["settlement_transaction_id"] == "t2", "hold_at"] = pd.NaT
+    prepared, _ = pivot_fees_txn(derive_adjustment_fees(spine))
+    assert any("1 negative rows without hold_at" in f for f in run_checks(prepared))
+
+
+def test_build_report_ships_clawback_as_a_negative_row_of_its_day():
+    spine, fee_cols = _prepared_clawback_spine()
+    report = build_report(spine, pos_identifiers(_ops()), fee_cols)
+    row = report.loc[report["settlement_transaction_id"] == "t5"].iloc[0]
+    assert row["id"] == "p5" and row["status"] == "AUTHORIZATION_REVERSED"
+    assert row["amount_sar"] == -10.0
+    assert row["fee_mdr_sar"] == -0.26 and row["fee_vat_sar"] == -0.04
+    assert row["fee_total_sar"] == -0.30
+    assert row["settled_amount_sar"] == -9.70
+    assert row["last_four"] == "3885" and row["card_brand"] == "VISA"
+    assert export_columns(report) == EXPORT_COLUMNS
 
 
 def test_null_parent_resolved_via_operation_passes_and_is_noted():

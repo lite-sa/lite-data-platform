@@ -585,9 +585,15 @@ models:
       - name: parent_payment_id
         description: The payment (payment_v2__payments.id).
       - name: external_reference_id
-        description: The capture or refund operation behind the leg (payment_v2__payment_operations.id).
+        description: >
+          The capture or refund operation behind the leg (payment_v2__payment_operations.id).
+          On a reversal_adjustment row it is the reversed capture's operation id with a
+          ':reversal-adjustment' suffix.
       - name: operation
-        description: capture or refund. NULL on older rows.
+        description: >
+          capture, refund or reversal_adjustment (a claw-back booked when a reversal lands on a
+          sale whose window already paid out; negative, no fees, first seen 2026-09-14). NULL on
+          older rows.
       - name: amount
         description: Gross leg amount, minor units.
       - name: currency
