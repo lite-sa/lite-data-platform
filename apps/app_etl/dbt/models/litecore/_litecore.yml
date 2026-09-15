@@ -1,5 +1,5 @@
 # Docs and tests for the litecore mirror: the payment_v2, ledger,
-# settlement and checkout_session raw tables, PII columns removed, built
+# settlement, checkout_session and payout raw tables, PII columns removed, built
 # into the core dataset next to the marts. Every description here lands on
 # the BigQuery table or column (persist_docs) and Metabase shows it, so:
 # short, plain, under 1,024 characters (tests/test_dbt_docs.py). Each table
@@ -608,5 +608,239 @@ models:
         description: When the leg was removed from settlement, UTC.
       - name: created_at
         description: Leg creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  # payout database, added 2026-09-15.
+  - name: payout__transfer
+    description: >
+      Redacted copy of LiteCore payout.transfer, the latest version of every
+      money movement, one row per id. Removed columns: incoming_details,
+      comment, initiated_by and checker_id. direction splits OUTGOING
+      payouts from INCOMING wallet credits found on ANB statements, and
+      status means different things per direction. Amounts are minor
+      units. fees is a JSON string. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The transfer id (uuid). payout__transfer_transaction.transfer_id references it.
+        tests: [not_null, unique]
+      - name: direction
+        description: >
+          OUTGOING (a payout to a beneficiary, the default) or INCOMING
+          (a credit to a Business wallet parsed from an ANB statement).
+      - name: merchant_id
+        description: >
+          The account that owns the movement (business_entities.business_id).
+          NULL on INCOMING rows the ledger has not matched to a wallet.
+      - name: beneficiary_id
+        description: The destination (payout__beneficiary.id). NULL on INCOMING rows.
+      - name: instruction_settlement_id
+        description: >
+          The settlement instruction this payout executes
+          (settlement__instruction.id). NULL on merchant-initiated
+          transfers and on INCOMING rows.
+      - name: external_unique_id
+        description: >
+          INCOMING only. The ANB statement line id, unique per row, used to
+          deduplicate statement replays.
+      - name: amount
+        description: Amount sent or received, minor units.
+      - name: total_amount
+        description: amount plus the fee legs in fees, minor units. Equal to amount on INCOMING rows.
+      - name: fees
+        description: >
+          JSON array string of fee_type and amount, minor units, for
+          example flat and vat. NULL when no fee applied.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: status
+        description: >
+          Lifecycle state, read with direction. OUTGOING: created,
+          funds_reserved, sms_otp_sent, sms_otp_verified, ivr_otp_sent,
+          otp_failed, pending_checker, rejected, approved,
+          initiation_failed, initiated, paid, verification_failed, settled,
+          not_settled, discrepancy, manual_review, completed, failed.
+          INCOMING: received, completed, manual_review (no wallet found).
+          completed and manual_review appear on both sides.
+      - name: value_date
+        description: Settlement value date on settlement-driven payouts. NULL elsewhere.
+      - name: otp_sent_at
+        description: When the maker's OTP was sent, UTC. Merchant-initiated payouts only.
+      - name: otp_expires_at
+        description: When that OTP expires, UTC.
+      - name: otp_verified
+        description: The maker passed the OTP step.
+      - name: checker_decision_at
+        description: When the checker approved or rejected, UTC.
+      - name: processed_at
+        description: When the bank transfer was handed to ANB, UTC.
+      - name: created_at
+        description: Transfer creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__transfer_transaction
+    description: >
+      Redacted copy of LiteCore payout.transfer_transaction, the latest
+      version of every payout event, one row per id. Removed columns:
+      request, response and comment. One row per hop of a transfer (ledger
+      hold, OTP, checker, ANB initiation and verification, statement
+      reconciliation, hold capture or release). Rebuilt every morning.
+    columns:
+      - name: id
+        description: The event id (uuid). ledger__entry.external_reference_id carries it on payout entries.
+        tests: [not_null, unique]
+      - name: transfer_id
+        description: The transfer (payout__transfer.id).
+      - name: event_type
+        description: >
+          What happened. TRANSFER_CREATED, LEDGER_HOLD_CREATED,
+          LEDGER_HOLD_CREATION_FAILED, SMS_OTP_SENT, SMS_OTP_VERIFIED,
+          IVR_OTP_SENT, OTP_VERIFICATION_FAILED, CHECKER_REVIEW_REQUESTED,
+          CHECKER_DECISION_RECORDED, OWNER_APPROVAL_RECORDED,
+          BANK_TRANSFER_INITIATION_RECORDED,
+          BANK_TRANSFER_VERIFICATION_RECORDED,
+          ACCOUNT_STATEMENT_RECONCILIATION_RECORDED, LEDGER_HOLD_CAPTURED,
+          LEDGER_HOLD_RELEASED, INCOMING_TRANSFER_RECEIVED,
+          INCOMING_TRANSFER_CREDIT_RECORDED. LEGACY_STATUS_RECORDED on
+          rows written before events were typed (2026-08).
+      - name: status
+        description: The transfer status after this event (payout__transfer.status values).
+      - name: external_status
+        description: >
+          The ANB transfer status returned (INITIATED, PROCESSED, PAID,
+          FAILED, RETURNED) or the reconciliation outcome. NULL on
+          internal events.
+      - name: external_ref
+        description: >
+          The ANB payment reference (PT...) from verification onwards, the
+          ANB request id at initiation, the statement line id on legacy
+          rows.
+      - name: created_at
+        description: When the event happened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__beneficiary
+    description: >
+      Redacted copy of LiteCore payout.beneficiary, the latest version of
+      every payout destination, one row per id. Removed columns: details,
+      name, creditor_party_name, created_by and checker_id. A merchant's
+      bank accounts for payouts (tag transfer) and for settlement (tag
+      settlement), with the maker-checker state. Soft deletes stay as
+      is_deleted = true. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The beneficiary id (uuid). payout__transfer.beneficiary_id references it.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The owning account (business_entities.business_id).
+      - name: instrument_id
+        description: The stored payment instrument (instrument-service id). NULL on most rows.
+      - name: type
+        description: Destination kind. iban on every row so far; card and wallet exist in code.
+      - name: tag
+        description: transfer (merchant-initiated payouts) or settlement (the settlement account).
+      - name: status
+        description: >
+          Maker-checker state. initiated, pending_verification,
+          verification_failed, verified, sms_otp_sent, sms_otp_verified,
+          ivr_otp_sent, otp_verified, otp_failed, pending_checker,
+          approved, rejected. settlement-tagged rows add
+          pending_backoffice_checker, backoffice_approved and
+          backoffice_rejected.
+      - name: external_status
+        description: The ANB account-verification result, Y or FAILED. NULL before verification.
+      - name: external_reference
+        description: The ANB verification reference (uuid). NULL before verification.
+      - name: is_deleted
+        description: Soft-deleted at source, including duplicates removed by migration 018/021.
+      - name: maker_country_code
+        description: ISO country of the maker at creation, used by the high-risk-country check.
+      - name: otp_sent_at
+        description: When the maker's OTP was sent, UTC.
+      - name: otp_expires_at
+        description: When that OTP expires, UTC.
+      - name: otp_verified
+        description: The maker passed the OTP step.
+      - name: checker_decided_at
+        description: When the checker approved or rejected, UTC.
+      - name: created_at
+        description: Beneficiary creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__beneficiary_transaction
+    description: >
+      Redacted copy of LiteCore payout.beneficiary_transaction, the latest
+      version of every beneficiary event, one row per id. Removed columns:
+      request, response and comment. One row per hop of a beneficiary's
+      onboarding (ANB verification, OTP, checker or back-office decision).
+      Rebuilt every morning.
+    columns:
+      - name: id
+        description: The event id (uuid).
+        tests: [not_null, unique]
+      - name: beneficiary_id
+        description: The beneficiary (payout__beneficiary.id).
+      - name: status
+        description: The beneficiary status after this event (payout__beneficiary.status values).
+      - name: external_status
+        description: The ANB verification result, Y or FAILED. NULL on internal events.
+      - name: external_reference
+        description: The ANB verification reference (uuid). NULL on internal events.
+      - name: created_at
+        description: When the event happened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__topup
+    description: >
+      Redacted copy of LiteCore payout.topup, the latest version of every
+      wallet top-up, one row per id. Removed column: checkout_session_data.
+      A merchant funds a Business wallet by paying a hosted checkout
+      session. Amounts are minor units. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The top-up id (topup- prefix plus uuid). payout__topup_transaction.topup_id references it.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The account funding the wallet (business_entities.business_id).
+      - name: wallet_id
+        description: The wallet credited (ledger__account.id).
+      - name: checkout_session_id
+        description: The checkout session paid (checkout_session__checkout_sessions.id).
+      - name: amount
+        description: Top-up amount, minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: status
+        description: initiated, completed, failed or expired.
+      - name: expires_at
+        description: When the checkout session expires, UTC.
+      - name: created_at
+        description: Top-up creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__topup_transaction
+    description: >
+      Redacted copy of LiteCore payout.topup_transaction, the latest
+      version of every top-up event, one row per id. Removed columns:
+      request, response and comment. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The event id (uuid).
+        tests: [not_null, unique]
+      - name: topup_id
+        description: The top-up (payout__topup.id).
+      - name: event_type
+        description: CHECKOUT_SESSION_CREATED, LIMIT_RESERVED, LIMIT_RELEASED or FINAL_STATUS_UPDATED.
+      - name: status
+        description: The top-up status after this event (payout__topup.status values).
+      - name: external_ref
+        description: The checkout session id, the top-up id, or the expiry job reference, per event_type.
+      - name: created_at
+        description: When the event happened, UTC.
       - name: updated_at
         description: Last update at source, UTC.

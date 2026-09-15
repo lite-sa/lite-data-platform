@@ -39,6 +39,7 @@ def test_pipeline_modules_import():
     import app_etl.ingestion.ledger  # noqa: F401
     import app_etl.ingestion.lem  # noqa: F401
     import app_etl.ingestion.payment_v2  # noqa: F401
+    import app_etl.ingestion.payout  # noqa: F401
     import app_etl.ingestion.pricing_engine  # noqa: F401
     import app_etl.ingestion.settlement  # noqa: F401
     import app_etl.ingestion.smart_routing  # noqa: F401

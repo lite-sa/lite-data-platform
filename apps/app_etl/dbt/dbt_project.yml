@@ -43,7 +43,7 @@ models:
         relation: true
         columns: true
     # The litecore mirror: one table per raw table of the payment_v2,
-    # ledger, settlement and checkout_session databases, latest version
+    # ledger, settlement, checkout_session and payout databases, latest version
     # per id, PII columns removed (docs/schema-management.md §1),
     # published to the payments team in Metabase. It builds into the same
     # dataset as everything else (BQ_DATASET_CORE): the CISO approval for
