@@ -16,6 +16,7 @@ factories.
 | `ingestion/smart_routing.py` | `smart_routing`: `profile`, `routing_rule` / `transaction_evaluation` | full replace (interim) / incremental append |
 | `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim; snapshots below are the target) |
 | `ingestion/pricing_engine.py` | `pricing_engine`: `rule_evaluation` | incremental append on `updated_at`, as above (per-op fee evaluation; `origin_reference` = op id for `payment-v2-service` rows) |
+| `ingestion/payout.py` | `payout`: `transfer`, `transfer_transaction`, `beneficiary`, `beneficiary_transaction`, `topup`, `topup_transaction` | incremental append on `updated_at`, as above (three header/audit pairs; `transfer.direction` splits payouts from incoming wallet credits; `instruction_settlement_id` = settlement `instruction.id`) |
 
 All pipelines run through the one daily workflow
 (`workflows/daily_pipeline.yaml`) — no staggered per-job schedules.
@@ -143,8 +144,8 @@ column — the deny-by-default allowlist stance was reversed 2026-08-12
 lifecycle; each pipeline file's docstring keeps its trim map); the
 exported schema YAML under `schemas/` is the changelog. Rules:
 `docs/schema-management.md`. The trim map's consumer is the dbt litecore
-mirror (`dbt/models/litecore/`): the payment_v2, ledger, settlement and
-checkout_session tables, latest version per id, PII columns left out,
+mirror (`dbt/models/litecore/`): the payment_v2, ledger, settlement,
+checkout_session and payout tables, latest version per id, PII columns left out,
 built into `core` for the payments team in Metabase.
 
 jsonb/array source columns can't load into BigQuery from Parquet as a
