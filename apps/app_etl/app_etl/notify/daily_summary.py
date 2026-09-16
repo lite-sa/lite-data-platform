@@ -497,12 +497,14 @@ def build_message(
     ]
     if month_by_channel:
         blocks.append(_month_table(month_by_channel, activity_day))
+    blocks.append(_section(f"*Stats for {activity_day:%a %d %b %Y}*"))
+    blocks.append(_section("*Platform*"))
+    blocks.append(_rate_table([("all", platform)], with_volume=True))
+    
     channel_groups = _breakdown(rows, "channel")
     if channel_groups:
         blocks.append(_section("*By channel*"))
         blocks.append(_rate_table(channel_groups, label_header="", with_volume=True))
-    blocks.append(_section("*Platform*"))
-    blocks.append(_rate_table([("all", platform)]))
     brand_groups = _breakdown(rows, "card_brand")
     if brand_groups:
         blocks.append(_section("*By card brand*"))

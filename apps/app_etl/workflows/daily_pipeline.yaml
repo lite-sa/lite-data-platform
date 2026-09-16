@@ -1,7 +1,7 @@
-# Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
-# database) -> transform + export (parallel: dbt build writing core, the
-# daily report exports — the per-merchant settlement files + the
-# all-merchants finance file, one job via
+# Daily pipeline DAG: extraction (sequential, one Cloud Run Job per source
+# database, in the order listed) -> transform + export (parallel: dbt
+# build writing core, the daily report exports — the per-merchant
+# settlement files + the all-merchants finance file, one job via
 # app_etl.export.daily_reports — reading raw). One Cloud Scheduler trigger
 # executes this workflow daily instead of staggered per-job schedules
 # guessing each other's runtimes.
@@ -16,17 +16,24 @@
 # it with a generous buffer after this workflow's trigger: a too-early
 # fire fails loudly and nothing retries it later that day.
 #
-# Parallel extraction again since 2026-08-18. The 2026-08-17 switch to
-# sequential worked around random terminal load failures ("matched no
-# files" on a staged _dlt_pipeline_state parquet): every pipeline staged
-# under the same GCS prefix and loads the same dataset, the dlt system
-# tables share a name across pipelines, and dlt truncates a table's
-# staging folder before loading it — so one pipeline's truncate could
-# delete a sibling's just-staged state file mid-load. The staging prefix
-# is now namespaced per pipeline (utils/dlt_helpers.py::bq_pipeline),
-# which removes the collision even for overlapping manual runs, so
-# extraction fans out again. The source replica now takes the eight
-# extracts concurrently — accepted at current volumes.
+# Sequential extraction since 2026-09-16. Every pipeline loads the same
+# dataset, so dlt's system tables (`_dlt_pipeline_state`, `_dlt_loads`)
+# are shared by all of them, and BigQuery allows 5 write operations per
+# 10 seconds per table (a fixed limit, not a raisable quota). With eight
+# jobs started together and each finishing in ~30 s, seven state loads
+# landed within two seconds of each other: `rateLimitExceeded` on
+# `_dlt_pipeline_state` every day from 2026-09-08 (pricing_engine, the
+# sixth state writer) until dlt's five immediate retries (~2 s apart, no
+# backoff) ran out on 2026-09-16 and ingest-payment-v2 failed. One job
+# after another removes the contention: about five minutes instead of
+# one, irrelevant at daily cadence, and the source replica no longer
+# takes eight concurrent extracts. Do not fan the extracts out again
+# without capping concurrent state writers at four per wave — the
+# parallel period (2026-08-18 → 2026-09-16) only worked while there were
+# five writers or fewer (business_management, all snapshots, writes no
+# state). The 2026-08-17 collision on the shared GCS staging prefix was a
+# different mechanism, fixed for good by the per-pipeline prefix in
+# utils/dlt_helpers.py::bq_pipeline.
 #
 # Deploy (user-run, tracked in docs/lite-data-prod-provisioning.md Phase 5):
 #   gcloud workflows deploy litecore-daily \
@@ -34,79 +41,65 @@
 #     --location=me-central2 \
 #     --service-account=<SA with run.invoker on the jobs below + run.viewer>
 #
-# A failed job fails its connector call, which fails its branch and the
-# whole execution — sibling branches are cancelled, but a Cloud Run
-# execution already started by a cancelled branch runs to completion on
-# its own (so an export failure does not abort a running dbt build, and
-# the later metrics post still finds a fresh mart). Reruns are safe
-# either way: every pipeline is watermarked (incremental) or
-# full-extract (snapshot), dbt fully restates what it builds, and the
-# export overwrites its files. No retry policy in v1: a rerun is a
-# manual `gcloud workflows run litecore-daily --location=me-central2`
-# after fixing the cause.
+# A failed job fails its connector call, which fails the execution. In
+# the extract stage that stops the remaining extracts too, so the
+# transform stage never runs on a partial extract; the fix-and-rerun is
+# the whole workflow, not the one job. In the transform_and_export stage
+# the sibling branch is cancelled, but a Cloud Run execution already
+# started by a cancelled branch runs to completion on its own (so an
+# export failure does not abort a running dbt build, and the later
+# metrics post still finds a fresh mart). Reruns are safe either way:
+# every pipeline is watermarked (incremental) or full-extract (snapshot),
+# dbt fully restates what it builds, and the export overwrites its files.
+# No retry policy in v1: a rerun is a manual `gcloud workflows run
+# litecore-daily --location=me-central2` after fixing the cause.
 
 main:
   steps:
-    - extract:
-        parallel:
-          branches:
-            - payment_v2:
-                steps:
-                  - run_payment_v2:
-                      call: run_job
-                      args:
-                        job: ingest-payment-v2
-            - ledger:
-                steps:
-                  - run_ledger:
-                      call: run_job
-                      args:
-                        job: ingest-ledger
-            - smart_routing:
-                steps:
-                  - run_smart_routing:
-                      call: run_job
-                      args:
-                        job: ingest-smart-routing
-            - business_management:
-                steps:
-                  - run_business_management:
-                      call: run_job
-                      args:
-                        job: ingest-business-management
-            - settlement:
-                steps:
-                  - run_settlement:
-                      call: run_job
-                      args:
-                        job: ingest-settlement
-            - checkout_session:
-                steps:
-                  - run_checkout_session:
-                      call: run_job
-                      args:
-                        job: ingest-checkout-session
-            - pricing_engine:
-                steps:
-                  - run_pricing_engine:
-                      call: run_job
-                      args:
-                        job: ingest-pricing-engine
-            - payout:
-                steps:
-                  - run_payout:
-                      call: run_job
-                      args:
-                        job: ingest-payout
-    # Both branches run only after every ingest branch succeeded — dbt
-    # never builds on a partial extract — and are independent of each
-    # other (dbt reads raw and writes core; the exports read raw and
-    # write the egress bucket), so they fan out. Both are FATAL: a
-    # broken build or a report deliverable that didn't ship must fail
-    # the execution, which is today's only alert signal. The
-    # export-merchant-daily job runs app_etl.export.daily_reports — the
-    # settlement report in per-merchant and all-merchants modes, isolated
-    # per mode inside the job.
+    # One extract at a time. payment_v2 goes first: the largest extract
+    # and the one every mart depends on, so its failure surfaces before
+    # the rest have run.
+    - extract_payment_v2:
+        call: run_job
+        args:
+          job: ingest-payment-v2
+    - extract_ledger:
+        call: run_job
+        args:
+          job: ingest-ledger
+    - extract_smart_routing:
+        call: run_job
+        args:
+          job: ingest-smart-routing
+    - extract_business_management:
+        call: run_job
+        args:
+          job: ingest-business-management
+    - extract_settlement:
+        call: run_job
+        args:
+          job: ingest-settlement
+    - extract_checkout_session:
+        call: run_job
+        args:
+          job: ingest-checkout-session
+    - extract_pricing_engine:
+        call: run_job
+        args:
+          job: ingest-pricing-engine
+    - extract_payout:
+        call: run_job
+        args:
+          job: ingest-payout
+    # Both branches run only after every extract succeeded — dbt never
+    # builds on a partial extract — and are independent of each other
+    # (dbt reads raw and writes core; the exports read raw and write the
+    # egress bucket), so they fan out. Both are FATAL: a broken build or
+    # a report deliverable that didn't ship must fail the execution,
+    # which is today's only alert signal. The export-merchant-daily job
+    # runs app_etl.export.daily_reports — the settlement report in
+    # per-merchant and all-merchants modes, isolated per mode inside the
+    # job.
     - transform_and_export:
         parallel:
           branches:

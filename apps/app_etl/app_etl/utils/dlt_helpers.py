@@ -160,7 +160,13 @@ def bq_pipeline(pipeline_name: str, settings: Settings) -> dlt.Pipeline:
     load is still reading its file — the terminal "matched no files"
     failures seen when the daily workflow ran its ingest jobs in parallel
     (2026-08-17). The per-pipeline prefix removes the collision for any
-    concurrent pair of runs, scheduled or manual.
+    concurrent pair of runs, scheduled or manual. The BigQuery system
+    tables stay shared, though: every run lands one load job on
+    `_dlt_pipeline_state` and one INSERT on `_dlt_loads`, and BigQuery
+    allows 5 writes per 10 s per table, so the daily workflow runs the
+    ingest jobs one after another (2026-09-16). More than four pipelines
+    finishing together — overlapping manual runs — can still trip
+    `rateLimitExceeded` there.
 
     All pipelines share this one dataset — the dataset is the source
     *system* (the LiteCore instance), not the database — so every resource
