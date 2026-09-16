@@ -95,7 +95,7 @@ def test_platform_breakdowns_rates_header_and_footer():
     # Header format is fixed by review: plain hyphen, never an em dash.
     assert "Payments Daily Summary - Tue 18 Aug 2026" in text
     assert "—" not in payload["blocks"][0]["text"]["text"]
-    # Five tables, in message order: month-to-date, channel, platform,
+    # Five tables, in message order: month-to-date, platform, channel,
     # card brand, top merchants.
     assert len(_tables(payload)) == 5
     # Headline numbers lead: lifetime line straight from the totals row,
@@ -118,9 +118,9 @@ def test_platform_breakdowns_rates_header_and_footer():
     assert "61.38" in month_cells
     assert "60.00" in month_cells
     assert "66.67" in month_cells
-    # Channel breakdown is the first daily table and carries volume +
+    # Channel breakdown follows the platform table and carries volume +
     # avg txn: pos 3300+555 authorized volume, avg 3855/65; ecom 1700/25.
-    channel_cells = str(_tables(payload)[1])
+    channel_cells = str(_tables(payload)[2])
     assert "3,855.00" in channel_cells
     assert "59.31" in channel_cells
     assert "1,700.00" in channel_cells
@@ -128,23 +128,27 @@ def test_platform_breakdowns_rates_header_and_footer():
     # Platform row counts EVERYTHING, hidden placeholder rows included:
     # 125 payments = 90 authorized + 18 declined + 17 undecided; net
     # attempts 99 = 90 + 9 gateway-reached declines; gross 90/108, net
-    # 90/99. The no_decision column itself is gone from display.
+    # 90/99. The no_decision column itself is gone from display. It is
+    # the first daily table and carries the day's authorized volume +
+    # avg txn (5000 + 555 over 90 authorized).
     assert "125" in payload["text"]
-    platform_cells = str(_tables(payload)[2])
+    platform_cells = str(_tables(payload)[1])
     assert "'125'" in platform_cells
     assert "'99'" in platform_cells
     assert "83.3%" in platform_cells
     assert "90.9%" in platform_cells
+    assert "5,555.00" in platform_cells
+    assert "61.72" in platform_cells
     assert "No decision" not in text
-    assert text.index("By channel") < text.index("*Platform*")
-    assert text.index("*Platform*") < text.index("By card brand")
+    assert text.index("*Platform*") < text.index("By channel")
+    assert text.index("By channel") < text.index("By card brand")
     # Breakdowns: card brand and channel only, placeholder rows hidden,
     # sorted largest first.
     assert "By card brand" in text
     assert "By channel" in text
     assert "By processing type" not in text
     assert "By gateway" not in text
-    breakdown_text = str(_tables(payload)[1]) + str(_tables(payload)[3])
+    breakdown_text = str(_tables(payload)[2]) + str(_tables(payload)[3])
     assert "unknown" not in breakdown_text
     assert "not_routed" not in breakdown_text
     assert text.index("MADA") < text.index("VISA")

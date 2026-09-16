@@ -7,22 +7,24 @@ iterated). Test merchants are already excluded and merchant names
 already denormalized in the fact; this job aggregates and formats,
 nothing more.
 
-Message layout (headline-first rework settled 2026-08-25; the rate
-columns and the hiding rule date to the 2026-08-24 layout):
+Message layout (platform table first since 2026-09-16; the
+headline-first rework settled 2026-08-25; the rate columns and the
+hiding rule date to the 2026-08-24 layout):
 - Headline numbers: the lifetime authorized-to-date line (count +
   volume, summed over the whole mart), then a month-to-date table —
   the 1st of the activity day's month through the activity day, never
   the partial current day the mart also holds — of authorized count /
   volume / avg txn by channel, with a Total row. Placeholder channels
   are hidden as rows but still counted in the Total.
-- By channel, for the activity day: the rate columns (payments /
-  authorized / declined / net attempts / gross / net) plus authorized
-  volume and avg txn.
-- Platform rate table for the activity day: the rate columns over
-  everything, hidden breakdown rows included. The no_decision column
+- A "Stats for <activity day>" heading, then the platform table: the
+  rate columns (payments / authorized / declined / net attempts /
+  gross / net) over everything, hidden breakdown rows included, plus
+  the day's authorized volume and avg txn. The no_decision column
   stays dropped from display (zero on a normal day); its payments
   still count in the Payments column and the gross denominator per the
   formulas below.
+- By channel, for the activity day: the same rate columns plus
+  authorized volume and avg txn.
 - By card brand: the rate columns only.
 - Hiding rule (both breakdowns): rows whose dimension is a null
   placeholder (unknown / not_routed / the source's own UNKNOWN) are
