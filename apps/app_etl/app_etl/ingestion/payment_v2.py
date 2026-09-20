@@ -1,12 +1,15 @@
-"""payment_v2 database → {BQ_DATASET_RAW}.payment_v2__{payments,payment_operations} —
-one pipeline per source database (a pipeline connects to exactly one DB),
-both tables incremental append.
+"""payment_v2 database -> {BQ_DATASET_RAW}.payment_v2__{payments,
+payment_operations,threeds,payment_link,payment_link_consumption}.
 
-Mutable sources, watermarked on `updated_at` with the safety-lag cap: every
-update re-extracts the row, so raw holds one appended row per source-row
-version and downstream dedups to the latest (see utils/dlt_helpers.py and
-the README's watermark design). Each resource keeps its own cursor inside
-this pipeline's state.
+All tables incremental append on `updated_at` with the safety-lag cap: raw
+holds one row per source-row version, downstream dedups to the latest.
+
+Joins: `threeds.payment_id` -> payments.id, nullable (left-join from
+threeds); `payment_link_consumption.link_id` -> payment_link.id.
+
+Sensitive columns: threeds customer / device / order_data and the EMV 3DS
+artifacts (authentication_value is the CAVV); payment_link customer /
+metadata; payment_link_consumption ip_address / user_agent / session_id.
 """
 
 from __future__ import annotations
@@ -31,10 +34,6 @@ def run() -> None:
     credentials = pg_credentials(settings, DATABASE)
 
     payments = bq_resource(
-        # TODO: add the column allowlist before pointing at a non-dummy source;
-        # jsonb columns to deny first: risk, customer, order_data, device,
-        # threeds_input, threeds_result, return_url, metadata, routing_result,
-        # risk_result
         sql_table(
             credentials=credentials,
             schema="public",
@@ -51,7 +50,6 @@ def run() -> None:
     )
 
     payment_operations = bq_resource(
-        # TODO: add the column allowlist before pointing at a non-dummy source
         sql_table(
             credentials=credentials,
             schema="public",
@@ -67,9 +65,60 @@ def run() -> None:
         cluster="payment_id",
     )
 
+    threeds = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="threeds",
+            query_adapter_callback=cap_upper_bound,
+        ).apply_hints(
+            table_name=f"{DATABASE}__threeds",
+            primary_key="id",
+            incremental=capped_incremental("updated_at"),
+            write_disposition="append",
+        ),
+        partition="updated_at",
+        # The main access path is the join to payments.
+        cluster="payment_id",
+    )
+
+    payment_link = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="payment_link",
+            query_adapter_callback=cap_upper_bound,
+        ).apply_hints(
+            table_name=f"{DATABASE}__payment_link",
+            primary_key="id",
+            incremental=capped_incremental("updated_at"),
+            write_disposition="append",
+        ),
+        partition="updated_at",
+        cluster="merchant_id",
+    )
+
+    payment_link_consumption = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="payment_link_consumption",
+            query_adapter_callback=cap_upper_bound,
+        ).apply_hints(
+            table_name=f"{DATABASE}__payment_link_consumption",
+            primary_key="id",
+            incremental=capped_incremental("updated_at"),
+            write_disposition="append",
+        ),
+        partition="updated_at",
+        cluster="link_id",
+    )
+
     pipeline = bq_pipeline(DATABASE, settings)
     load_info = pipeline.run(
-        [payments, payment_operations], loader_file_format="parquet", refresh=refresh_mode()
+        [payments, payment_operations, threeds, payment_link, payment_link_consumption],
+        loader_file_format="parquet",
+        refresh=refresh_mode(),
     )
     # per-table extracted row counts — load_info's summary doesn't include them
     print(pipeline.last_trace.last_normalize_info)

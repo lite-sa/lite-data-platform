@@ -1,8 +1,8 @@
 # Operational runbook — v1 test phase
 
 Every manual operation we expect to run while testing the pipelines:
-ingest → verify → dbt build → verify, plus the destructive resets at the
-bottom. Commands are copy-pasteable from the **repo root**. Design context
+ingest → verify → dbt build → verify, the image build/deploy flow
+(§5.5), plus the destructive resets at the bottom. Commands are copy-pasteable from the **repo root**. Design context
 lives elsewhere (`docs/aml-alert-design.md`, `docs/configuration.md`,
 `apps/app_etl/README.md`) — this file is only *how to run and check
 things*.
@@ -326,19 +326,216 @@ limit 14"
 
 ## 5. End-to-end via the workflow
 
-The daily workflow (`litecore-daily`) currently runs the dbt transform
-alone — the ingest stage is commented out until the per-database Cloud
-Run Jobs exist (§1's cloud form), and the AML alert-export stage that
-used to run after transform was removed along with the alert-mart stack
-(`apps/app_etl/workflows/daily_pipeline.yaml`). Scheduler attach is
-deliberately still pending — trigger manually:
+The daily workflow (`litecore-daily`,
+`apps/app_etl/workflows/daily_pipeline.yaml`) runs the ingest fan-out
+(one Cloud Run Job per source database), then the deliver stage: the
+Slack daily summary and the merchant report export in parallel. Notify
+failure logs a warning and the run continues; export failure fails the
+execution. Cloud Scheduler triggers the workflow at 06:45 Riyadh in both
+environments.
+
+Redeploy after any edit to the yaml. The deploy is idempotent and does
+not touch in-flight executions; the next execution picks up the new
+definition:
 
 ```bash
-gcloud workflows run litecore-daily --location=$REGION --project=$DEV
-gcloud workflows executions list litecore-daily --location=$REGION --project=$DEV --limit=5
+gcloud workflows deploy litecore-daily \
+  --project=lite-data-prod --location=$REGION \
+  --source=apps/app_etl/workflows/daily_pipeline.yaml \
+  --service-account=sa-app-etl@lite-data-prod.iam.gserviceaccount.com
 ```
 
+Two IAM prerequisites, both learned the hard way on 2026-08-23. Every
+new job needs its per-job `run.invoker` grant before the workflow can
+call it (§5.5.4.1; notify was missing it and the deliver stage failed).
+And the workflow SA needs `roles/logging.logWriter` on the project, or
+the deliver stage's `sys.log` warning throws 403 inside the except
+handler:
+
+```bash
+gcloud projects add-iam-policy-binding lite-data-prod \
+  --member="serviceAccount:sa-app-etl@lite-data-prod.iam.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+```
+
+Trigger and inspect manually. A manual run is safe end to end: ingests
+are watermarked, the export reruns cleanly, and notify refuses stale
+data on its own:
+
+```bash
+gcloud workflows run litecore-daily --location=$REGION --project=lite-data-prod
+gcloud workflows executions list litecore-daily --location=$REGION --project=lite-data-prod --limit=5
+```
+
+For dev, swap in `$DEV` and `sa-app-etl@lite-data-dev.iam.gserviceaccount.com`.
+Before the first dev redeploy, create `export-merchant-daily` in dev, or
+every dev execution fails at the deliver stage. Do not create a dev
+notify job: it would post dev numbers to the production Slack channel,
+and a missing job only logs a warning.
+
 No retry policy in v1: fix the cause, run it again.
+
+## 5.5 Ship a new image (build → push → deploy jobs)
+
+The repeating deploy flow. CI (`cloudbuild/release.yaml`) builds and
+pushes on merge to `main`, tagged `$SHORT_SHA`; anything from a branch is
+a **manual** push tagged `manual-<shortsha>`. Never `:latest` — every
+deploy is an explicit tag move on a job.
+
+### 5.5.1 Build and push (manual)
+
+Context must be the **repo root** (the image needs the root
+`pyproject.toml`/`uv.lock`); `--platform linux/amd64` is mandatory from
+an M-series Mac — Cloud Run is amd64.
+
+```bash
+source infra.env            # OPS (AR project), REGION, REPO (AR repo name)
+TAG=manual-$(git rev-parse --short HEAD)
+IMG=$REGION-docker.pkg.dev/$OPS/$REPO/app-etl:$TAG
+echo "$IMG"                 # LOOK: an unset var leaves '//' -> "invalid reference format"
+
+gcloud auth configure-docker $REGION-docker.pkg.dev   # once per machine
+
+docker buildx build --platform linux/amd64 \
+  -f apps/app_etl/Dockerfile -t "$IMG" --push .
+
+gcloud artifacts docker images list \
+  "$REGION-docker.pkg.dev/$OPS/$REPO/app-etl" --include-tags --limit=3
+```
+
+### 5.5.2 Point an existing job at the new tag
+
+```bash
+gcloud run jobs update <job-name> --image="$IMG" --region=$REGION --project=<project>
+gcloud run jobs describe <job-name> --region=$REGION --project=<project> \
+  --format='value(template.template.containers[0].image)'
+```
+
+Or simply update all the jobs to the new image
+
+```bash 
+for project in lite-data-dev lite-data-prod; do
+  for job in $(gcloud run jobs list --project="$project" --region=$REGION \
+               --format='value(metadata.name)'); do
+    gcloud run jobs update "$job" --image="$IMG" \
+      --region=$REGION --project="$project"
+  done
+done
+```
+
+Then verify that the all jobs are in sync:
+
+```bash
+for project in lite-data-dev lite-data-prod; do
+  gcloud run jobs list --project="$project" --region=$REGION \
+    --format='table(metadata.name, spec.template.spec.template.spec.containers[0].image)'
+done
+
+```
+
+### 5.5.3 Create a new job
+
+The image has no default command — every job sets its own. Two shapes,
+nothing else:
+
+- **Ingest jobs** (touch Postgres): REQUIRE the three Direct-VPC-egress
+  flags (`--network/--subnet/--vpc-egress=private-ranges-only`) plus the
+  `PG_*` env vars — copy the loop in
+  `docs/lite-data-prod-provisioning.md` Phase 4, don't retype it.
+- **BQ/GCS-only jobs** (transform, notify, export): NO VPC flags — they
+  never touch Postgres, and BigQuery/GCS ride public APIs that
+  `private-ranges-only` wouldn't route anyway.
+
+Worked example, the merchant daily export (BQ/GCS shape):
+
+For DEV
+
+```bash
+gcloud run jobs create ingest-checkout-session \
+  --project=$DEV --region=$REGION --image=$IMG \
+  --service-account=$SA \
+  --command=python --args="-m,app_etl.ingestion.checkout_session" \
+  --set-env-vars="GCP_PROJECT=$DEV,GCS_BUCKET=$BUCKET,BQ_DATASET_RAW=raw_test" \
+  --set-env-vars="PG_INSTANCE_CONNECTION_NAME=lite-litecore-dev:me-central2:non-cde-postgres" \
+  --set-env-vars="PG_IAM_USER=sa-app-etl@lite-data-dev.iam" \
+  --task-timeout=900 --max-retries=0
+```
+
+For PROD
+```bash
+gcloud run jobs create ingest-checkout-session \
+  --project=$PROD --region=$REGION --image=$IMG \
+  --service-account=$SA_PROD \
+  --network=$VPC_PROD --subnet=$SUBNET_PROD --vpc-egress=private-ranges-only \
+  --command=python --args="-m,app_etl.ingestion.checkout_session" \
+  --set-env-vars="GCP_PROJECT=$PROD,GCS_BUCKET=$BUCKET_PROD,BQ_DATASET_RAW=raw_litecore" \
+  --set-env-vars="PG_INSTANCE_CONNECTION_NAME=$PG_ICN_PROD" \
+  --set-env-vars="PG_IAM_USER=sa-app-etl@lite-data-prod.iam,PG_IP_TYPE=psc" \
+  --task-timeout=900 --max-retries=0
+```
+
+
+```bash
+PROD=lite-data-prod
+SA_PROD=sa-app-etl@lite-data-prod.iam.gserviceaccount.com
+
+# daily_reports runs the settlement report twice: per-merchant delivered
+# files + the all-merchants file to finance-reports/daily_settlement/
+# (since the 2026-08-31 cutover; the job predates it — an existing job
+# gets the same flags via `gcloud run jobs update`)
+gcloud run jobs create export-merchant-daily \
+  --project=$PROD --region=$REGION --image="$IMG" \
+  --service-account=$SA_PROD \
+  --command=python --args="-m,app_etl.export.daily_reports" \
+  --set-env-vars="GCP_PROJECT=$PROD,BQ_DATASET_RAW=raw_litecore,GCS_BUCKET_EGRESS=lite-data-prod-egress" \
+  --task-timeout=900 --max-retries=0
+
+# run.invoker is per-job, never project-level
+gcloud run jobs add-iam-policy-binding export-merchant-daily \
+  --project=$PROD --region=$REGION \
+  --member="serviceAccount:$SA_PROD" --role=roles/run.invoker
+```
+
+(`--max-retries=0` is the fleet-wide stance until the retry/safety-lag
+interplay is reasoned through.)
+
+
+### 5.5.4.1
+
+Execute the job with override, for example add `--refresh`
+```bash 
+gcloud run jobs execute ingest-business-management \
+  --args="-m,app_etl.ingestion.business_management,--refresh" \
+  --region=me-central2 --project=lite-data-dev
+```
+
+### 5.5.4 Execute once and verify before scheduling
+
+```bash
+gcloud run jobs execute <job-name> --project=<project> --region=$REGION --wait
+
+gcloud logging read \
+  'resource.type="cloud_run_job" AND resource.labels.job_name="<job-name>"' \
+  --project=<project> --freshness=1d --limit=50 --format='value(textPayload)'
+
+# for the export job: what landed in egress
+gcloud storage ls -r gs://lite-data-prod-egress/merchant-reports/
+```
+
+### 5.5.5 Attach the schedule
+
+```bash
+gcloud scheduler jobs create http <job-name>-trigger \
+  --project=<project> --location=$REGION \
+  --schedule="0 9 * * *" --time-zone="Asia/Riyadh" \
+  --uri="https://run.googleapis.com/v2/projects/<project>/locations/$REGION/jobs/<job-name>:run" \
+  --http-method=POST \
+  --oauth-service-account-email=<job-SA>
+```
+
+The SA needs `run.invoker` on the job (5.5.3 grants it). Then record the
+job + scheduler + any bucket grants in `docs/provisioning.md` /
+`docs/lite-data-prod-provisioning.md` — the as-built ledger, every time.
 
 ---
 
@@ -453,4 +650,10 @@ run) — useful when a local working dir is corrupted or you want a clean
 
 ```bash
 rm -rf ~/.dlt/pipelines/payment_v2
+```
+
+## 7 Daily Summary 
+
+```bash 
+uv run python -m app_etl.notify.daily_summary --dry-run | jq '{blocks}' | pbcopy
 ```

@@ -10,6 +10,7 @@ dependencies = [
     "google-cloud-bigquery>=3.30",
     "dlt[bigquery,gs,parquet,sql-database]>=1.28.1",
     "sqlalchemy>=2",  # imported directly in utils/dlt_helpers.py, not just via dlt
+    "requests>=2.32",  # imported directly in notify/daily_summary.py, not just via dlt
     "cloud-sql-python-connector[pg8000]>=1.18",
     "python-dotenv>=1.1",
     "dbt-bigquery>=1.11,<2",

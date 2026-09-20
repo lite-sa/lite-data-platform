@@ -17,3 +17,110 @@ sources:
         description: >
           Append-only operation log (authorize/capture/refund/…) per
           payment; owns terminal_id, operation_type, POS fields.
+      - name: payment_v2__threeds
+        description: >
+          EMV 3DS authentication attempts. payment_id -> payments.id but
+          nullable (an auth can exist before/without its payment) and
+          retry-capable — readers dedup per payment. PII-dense: staging
+          exposes a strict allowlist.
+      - name: business_management__business_entities
+        description: >
+          Merchant registry, `replace` disposition — latest state only,
+          no version history yet. business_id (not id, the source PK) is
+          what payments.merchant_id references.
+      - name: smart_routing__transaction_evaluation
+        description: >
+          One row per smart-routing evaluation; payment_id -> payments.id.
+          Ecom pipeline only — POS payments never route. The routing
+          decision lives in the routing_obj JSON, matched rules in
+          matched_rules.
+      - name: checkout_session__checkout_sessions
+        description: >
+          One row per hosted checkout session (checkout-session-service,
+          its own database). No FK to payments in either direction: the
+          verified link is (merchant_id, order_id) -> payments, order
+          grain. status is written lazily at source. PII-dense
+          (customer/metadata/order_data JSONB, payment_url, tokenised
+          redirect_urls): staging exposes a strict allowlist.
+      - name: business_management__channels
+        description: >
+          Per-merchant sales channels (POS store, ecom API / hosted
+          checkout / payment link), `replace` disposition. id is what
+          payments.channel_id and checkout_sessions.channel_id reference;
+          business_id -> business_entities.id (the source PK).
+      # Declared 2026-09-09 for the litecore mirror (models/litecore/); no
+      # staging view reads them.
+      - name: payment_v2__payment_link
+        description: >
+          Payment links (uuid ids). customer, metadata and description are
+          payer contact and merchant free text; public_token is the link's
+          capability token; created_by a staff id (trim map).
+      - name: payment_v2__payment_link_consumption
+        description: >
+          One row per payment-link open; link_id -> payment_link.id.
+          ip_address, user_agent, session_id and hosted_url are the trim
+          map.
+      - name: ledger__account
+        description: >
+          Ledger accounts, merchant and pool. Incremental on updated_at so
+          raw keeps the balance trajectory. account_number, virtual_iban
+          and opened_by are the trim map.
+      - name: ledger__entry
+        description: >
+          Ledger entries; account_id -> ledger__account.id,
+          external_reference_id -> the payment operation or settlement
+          leg that caused the entry. No PII.
+      - name: settlement__account
+        description: >
+          Settlement accounts per merchant, incremental so status changes
+          and soft deletes keep history. created_by, updated_by are the
+          trim map.
+      - name: settlement__settlement_window
+        description: >
+          Settlement windows (a merchant's payout batch). created_by,
+          updated_by are the trim map.
+      - name: settlement__instruction
+        description: >
+          Payout instructions; settlement_window_id -> settlement_window.id.
+          No PII.
+      - name: settlement__transaction
+        description: >
+          Settlement legs; parent_payment_id -> payments.id,
+          external_reference_id -> payment_operations.id. fees is jsonb[]
+          landed as a JSON-array string. No PII.
+      # Declared 2026-09-15 for the payout mirror tables (models/litecore/);
+      # no staging view reads them.
+      - name: payout__transfer
+        description: >
+          Payout header, one row per money movement; `direction` splits
+          OUTGOING payouts from INCOMING wallet credits parsed from ANB
+          statements, and `status` is polymorphic on it.
+          instruction_settlement_id -> settlement__instruction.id,
+          beneficiary_id -> payout__beneficiary.id. incoming_details,
+          comment, initiated_by and checker_id are the trim map.
+      - name: payout__transfer_transaction
+        description: >
+          Payout event log; transfer_id -> payout__transfer.id. The ledger
+          posts external_reference_id = this table's id (to verify on
+          prod). request, response and comment are the trim map.
+      - name: payout__beneficiary
+        description: >
+          Merchant payout destinations (tag transfer or settlement),
+          maker-checker status, soft-deleted via is_deleted. details,
+          name, creditor_party_name, created_by and checker_id are the
+          trim map.
+      - name: payout__beneficiary_transaction
+        description: >
+          Beneficiary audit log (ANB verification, OTP, checker);
+          beneficiary_id -> payout__beneficiary.id. request, response and
+          comment are the trim map.
+      - name: payout__topup
+        description: >
+          Wallet top-ups paid through a hosted checkout session;
+          checkout_session_id -> checkout_session__checkout_sessions.id,
+          wallet_id -> ledger__account.id. checkout_session_data is the
+          trim map.
+      - name: payout__topup_transaction
+        description: >
+          Top-up event log; topup_id -> payout__topup.id. request,
+          response and comment are the trim map.

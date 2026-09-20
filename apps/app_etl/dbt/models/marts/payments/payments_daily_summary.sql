@@ -1,47 +1,61 @@
 {{
     config(
-        materialized="incremental",
-        incremental_strategy="microbatch",
-        event_time="run_date",
-        begin="2026-07-01",
-        batch_size="day",
-        lookback=0,
-        full_refresh=false,
-        partition_by={"field": "run_date", "data_type": "date", "granularity": "day"},
+        materialized="table",
+        partition_by={
+            "field": "payment_creation_date",
+            "data_type": "date",
+            "granularity": "day",
+        },
         cluster_by=["merchant_id"],
-        on_schema_change="append_new_columns",
     )
 }}
 
--- Merchant x run_date payment activity summary — the canonical, non-AML
--- mart: pure payment volume, no rule thresholds. Same run_date-keyed,
--- lookback=0, never --full-refresh in prod shape as aml_merchant_features
--- (docs/dbt-primer.md §5). Future payments features land in
--- int_payments__daily_activity or a sibling intermediate model, not by
--- re-aggregating raw here.
+-- Daily payment funnel: one row per payment_creation_date × merchant ×
+-- channel × entry_mode × gateway × card_brand × currency × payment_method.
+-- Reads the payments fact only and is fully restated with it every run.
+-- payment_creation_date is the payment's local calendar date.
 --
--- Unlike aml_merchant_features (which reads staging and hand-derives its
--- date window), int_payments__daily_activity already declares
--- event_time="run_date" itself, so dbt wraps the ref below in the
--- current batch's window automatically — every remaining row shares one
--- run_date, hence group by run_date alongside merchant_id. This is the
--- microbatch "automatic upstream filtering" case docs/dbt-primer.md §5
--- describes; no hand-rolled date logic needed here.
+-- gateway is the decision connector (the one that gave the final answer);
+-- 'not_routed' means no connector answered. card_brand is 'unknown' before
+-- ~2026-08-17.
 --
--- total_amount_minor sums across currencies (99.5% SAR today, same
--- accepted simplification as aml_merchant_features; currency-mix policy
--- is still an open TODO). Attempt-grained: a payment authorized in
--- several attempts contributes each attempt.
+-- authorized / declined / no_decision partition request_count, and
+-- sum(request_count) equals the fact's row count (singular tests).
+-- gross = authorized / (authorized + declined);
+-- net = authorized / (authorized + gateway_declined).
+--
+-- Amounts are major units from the fact. captured / refunded / reversed are
+-- attributed to the payment's creation date, not the capture or refund day.
 
 select
-    run_date,
+    date(created_at_local) as payment_creation_date,
     merchant_id,
-    count(distinct payment_id) as payment_count,
-    count(*) as operation_count,
-    countif(operation_type = 'AUTHORIZE') as authorize_count,
-    countif(operation_type = 'CAPTURE') as capture_count,
-    countif(operation_type = 'REFUND') as refund_count,
-    sum(amount_minor) as total_amount_minor,
-    current_timestamp() as evaluated_at
-from {{ ref('int_payments__daily_activity') }}
-group by run_date, merchant_id
+    merchant_name,
+    channel,
+    entry_mode,
+    coalesce(gateway, 'not_routed') as gateway,
+    coalesce(card_brand, 'unknown') as card_brand,
+    currency,
+    coalesce(payment_method, 'unknown') as payment_method,
+    count(*) as request_count,
+    countif(outcome = 'authorized') as authorized_count,
+    countif(outcome = 'declined') as declined_count,
+    countif(outcome = 'no_decision') as no_decision_count,
+    countif(outcome = 'declined' and gateway_reached) as gateway_declined_count,
+    sum(amount) as request_amount,
+    sum(if(outcome = 'authorized', amount, 0)) as authorized_amount,
+    sum(if(outcome = 'declined', amount, 0)) as declined_amount,
+    sum(captured_amount) as captured_amount,
+    sum(refunded_amount) as refunded_amount,
+    sum(reversed_amount) as reversed_amount
+from {{ ref('payments') }}
+group by
+    payment_creation_date,
+    merchant_id,
+    merchant_name,
+    channel,
+    entry_mode,
+    gateway,
+    card_brand,
+    currency,
+    payment_method

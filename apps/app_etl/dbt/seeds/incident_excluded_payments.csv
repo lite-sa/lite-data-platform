@@ -1,0 +1,10 @@
+payment_id,incident,reason,note
+d565fbdc-e26a-458a-9cc2-b84b81e031c3,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.10 SAR shir fil alwahah
+92d01a69-3c74-4b80-87a8-5250f5abb7ad,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.13 SAR shir fil alwahah
+6b0f20bb-5176-4d04-8745-d4f639ec2675,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.12 SAR shir fil alwahah
+aeca7623-7224-4221-b02f-ba6164ec0275,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.10 SAR shir fil alwahah
+aa6c4bf8-48e0-4b39-8466-d8a1bbc26e3d,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.12 SAR shir fil alwahah
+84e62d43-85e5-45a4-a36b-c224127a3724,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.01 SAR alquwa almuttalaqa
+5bd8ba25-72b0-4724-ac3a-d12a2dc43830,inc-2026-08-24-duplicate-webhooks,deleted_in_source,failed dup 0.10 SAR shir fil alwahah
+170e25c6-1072-42b2-a7e1-a42957d32717,inc-2026-08-24-duplicate-webhooks,reversed_in_ledger,wrong-terminal 0.01 SAR capture; replacement 78f094ae
+ac07fcb0-136a-4be0-a50b-8392481fe702,inc-2026-08-24-duplicate-webhooks,reversed_in_ledger,wrong-terminal 60.00 SAR capture; replacement 55d9efb6

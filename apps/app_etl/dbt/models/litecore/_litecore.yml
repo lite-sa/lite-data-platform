@@ -1,0 +1,852 @@
+# Docs and tests for the litecore mirror: the payment_v2, ledger,
+# settlement, checkout_session and payout raw tables, PII columns removed, built
+# into the core dataset next to the marts. Every description here lands on
+# the BigQuery table or column (persist_docs) and Metabase shows it, so:
+# short, plain, under 1,024 characters (tests/test_dbt_docs.py). Each table
+# description names the redacted columns; the reasons are the "Left out"
+# comment in the matching .sql file.
+version: 2
+
+models:
+  - name: payment_v2__payments
+    description: >
+      Redacted copy of LiteCore payment_v2.payments, the latest version of
+      every payment, one row per id. Removed columns: customer, order_data,
+      device, threeds_input, threeds_result, return_url, metadata and
+      splits (shopper, card and request data). Amounts are minor units
+      (halalas for SAR). instrument_data, risk_result and routing_result
+      are JSON strings, read them with JSON_VALUE. Test merchants are
+      included, filter with core.test_merchants. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The payment id (uuid). payments.payment_id in core.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The account that owns the payment (business_entities.business_id).
+      - name: acting_business_account_id
+        description: >
+          Business account that created the payment on the merchant's
+          behalf (on_behalf_of). NULL on every row so far.
+      - name: amount
+        description: Requested amount in minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: status
+        description: >
+          Payment state at source. CAPTURED, FAILED, PENDING, REFUNDED,
+          REQUIRES_ACTION, AUTHORIZATION_REVERSED or AUTHORIZED. For
+          authorization rates use core.payments.outcome instead.
+      - name: processing_type
+        description: >
+          REGULAR, MOTO, CARD_ON_FILE or UNSCHEDULED_CARD_ON_FILE. NULL
+          on POS.
+      - name: capture_mode
+        description: INSTANT (authorize and capture in one call) or MANUAL.
+      - name: payment_method
+        description: CARD or APPLE_PAY. NULL on POS.
+      - name: channel_id
+        description: >
+          The sales channel (business_management channels.id). The literal
+          default when the merchant sent none.
+      - name: channel_type
+        description: IN-PERSON or ECOM. NULL on rows created before 2026-08-18.
+      - name: order_id
+        description: >
+          The merchant's order reference. Joins checkout_session__checkout_sessions on
+          (merchant_id, order_id).
+      - name: payment_link_id
+        description: The payment link paid, when any (payment_v2__payment_link.id).
+      - name: payment_link_consumption_id
+        description: The link open that produced the payment (payment_v2__payment_link_consumption.id).
+      - name: payment_instrument_id
+        description: >
+          Instrument-service id of the card or wallet token used. Issued
+          per payment, so it does not identify a card across payments.
+      - name: gateway_reference_id
+        description: The ecom gateway's reference for the payment. NULL on POS.
+      - name: instrument_data
+        description: >
+          JSON string snapshot of the instrument at authorization, with
+          card_brand, type, last_four, expiry_month, expiry_year,
+          future_usage and agreement_id.
+      - name: risk
+        description: >
+          The merchant's risk request as sent, JSON string with enabled.
+          NULL on nearly every row.
+      - name: risk_result
+        description: JSON string with allowed, requires_threeds and risk_score.
+      - name: routing_result
+        description: JSON string with connector_type, provider_config_id and terminal_id.
+      - name: created_at
+        description: Payment creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payment_v2__payment_operations
+    description: >
+      Redacted copy of LiteCore payment_v2.payment_operations, the latest
+      version of every operation, one row per id. Removed column: metadata
+      (the provider request and response payloads and POS receipt fields).
+      payment_id joins payment_v2__payments. Amounts are minor units. On
+      POS, idempotency_key holds the receipt references RRN;STAN;TID.
+      Rebuilt every morning.
+    columns:
+      - name: id
+        description: The operation id (uuid).
+        tests: [not_null, unique]
+      - name: payment_id
+        description: The payment this operation belongs to.
+        tests: [not_null]
+      - name: acting_business_account_id
+        description: >
+          Business account acting on the merchant's behalf. NULL on every
+          row so far.
+      - name: idempotency_key
+        description: >
+          Caller-supplied key. On POS the receipt references RRN;STAN;TID.
+      - name: operation_type
+        description: >
+          AUTHORIZE, CAPTURE, PURCHASE (POS sale), REFUND, VOID, REVERSE or
+          EXTEND_AUTHORIZATION.
+      - name: status
+        description: SUCCESS, FAILURE or PENDING.
+      - name: amount
+        description: Operation amount in minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: reason
+        description: >
+          Failure reason text, NULL on success. Common values are
+          Authorization declined, 3DS authentication failed and Routing
+          decision failed.
+      - name: initiated_by
+        description: MERCHANT (API and POS) or CARD_HOLDER (hosted checkout and payment links).
+      - name: connector_type
+        description: >
+          The connector that handled it. TSP is the POS provider, mpgs the
+          ecom gateway, NSP a second POS provider.
+      - name: connector_response_code
+        description: >
+          The gateway or provider response code. core.decline_code_map
+          labels the common ones.
+      - name: connector_response_message
+        description: The gateway or provider response message.
+      - name: connector_transaction_id
+        description: The gateway's or provider's transaction id.
+      - name: http_status_code
+        description: HTTP status the connector returned, ecom only. 201 is success. NULL on POS.
+      - name: processing_duration_ms
+        description: Connector call duration in milliseconds.
+      - name: retry_count
+        description: Connector retries on this operation. Never written so far, NULL.
+      - name: max_retries
+        description: Retry cap on this operation. Never written so far, NULL.
+      - name: next_retry_at
+        description: Next scheduled retry, UTC. Never written so far, NULL.
+      - name: terminal_id
+        description: POS terminal. NULL on ecom.
+      - name: entry_mode
+        description: >
+          Declared card entry mode, written on a handful of POS rows only.
+          core.payments.entry_mode is the derived one.
+      - name: reversed_operation_id
+        description: On a REVERSE, the operation it reversed.
+      - name: created_at
+        description: Operation creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payment_v2__threeds
+    description: >
+      Redacted copy of LiteCore payment_v2.threeds, the latest version of
+      every 3DS authentication attempt, one row per id. A payment can have
+      several and payment_id is nullable. Removed columns: customer,
+      device, order_data (cardholder, browser and basket), the
+      authentication_value cryptogram, xid, creq, acs_url, return_url,
+      redirect_url and idempotency_key. Protocol results and message ids
+      stay. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The authentication attempt id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The account that owns the attempt, as on payments.
+      - name: acting_business_account_id
+        description: >
+          Business account that started the authentication on the
+          merchant's behalf. NULL unless the request carried on_behalf_of.
+      - name: payment_id
+        description: The payment. NULL when the attempt never reached one.
+      - name: instrument_id
+        description: The instrument authenticated (instrument-service id).
+      - name: status
+        description: >
+          AUTHENTICATED, EXPIRED (the shopper never answered) or FAILED.
+          CHALLENGE_REQUIRED while a challenge is in flight.
+      - name: version
+        description: >
+          EMV 3DS protocol version, 2.2.0. NONE means the gateway ran no
+          3DS. NULL means no result came back.
+      - name: authentication_scheme
+        description: VISA or MASTERCARD.
+      - name: trans_status
+        description: >
+          EMV 3DS transStatus. Y and A mean authenticated, N and R mean
+          the issuer refused. NULL when no result came back.
+      - name: trans_status_reason
+        description: EMV 3DS transStatusReason code. Empty at source so far.
+      - name: eci
+        description: >
+          Electronic commerce indicator. 05 (Visa) and 02 (Mastercard)
+          mean authenticated, 06 and 01 attempted, 07 and 00 not
+          authenticated.
+      - name: acs_challenge_mandated
+        description: >
+          Y when the issuer required a challenge. Written from the
+          gateway's challenge-pending flag, so nearly every row is Y.
+      - name: acs_authentication_type
+        description: ACS authentication type. Empty at source so far.
+      - name: acs_challenge_cancel_reason
+        description: Why a challenge was cancelled. Empty at source so far.
+      - name: authentication_time
+        description: >
+          Issuer authentication time as an ISO 8601 string. Empty when no
+          result came back.
+      - name: threeds_server_trans_id
+        description: 3DS Server transaction id.
+      - name: ds_transaction_id
+        description: Directory server transaction id.
+      - name: acs_transaction_id
+        description: Issuer ACS transaction id.
+      - name: acs_reference_number
+        description: Issuer ACS reference number.
+      - name: ds_reference_number
+        description: Directory server reference number.
+      - name: acs_operator_id
+        description: ACS operator id. Empty at source so far.
+      - name: provider_authentication_reference
+        description: The gateway's authentication reference. NULL when no 3DS ran.
+      - name: created_at
+        description: Attempt started, UTC.
+      - name: updated_at
+        description: Attempt reached its latest status, UTC.
+
+  - name: payment_v2__payment_link
+    description: >
+      Redacted copy of LiteCore payment_v2.payment_link, the latest
+      version of every payment link, one row per id. Removed columns:
+      public_token, redirect_urls, description, customer, metadata and
+      created_by. payments.payment_link_id references id. Amount in minor
+      units. The counters are the source's own tallies. Rebuilt every
+      morning.
+    columns:
+      - name: id
+        description: The link id (uuid). payments.payment_link_id references it.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The account that owns the link (business_entities.business_id).
+      - name: acting_business_account_id
+        description: >
+          Business account that created the link on the merchant's
+          behalf. NULL when the creator acted for itself.
+      - name: merchant_reference_id
+        description: The merchant's own reference for the link. NULL on most.
+      - name: mode
+        description: SINGLE_USE or REUSABLE. SINGLE_USE only today.
+      - name: status
+        description: ACTIVE, PAID, EXPIRED or DISABLED.
+      - name: amount
+        description: Link amount in minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: three_ds_required
+        description: The merchant asked for 3DS on this link.
+      - name: processing_type
+        description: REGULAR or MOTO. A MOTO link makes its payments MOTO.
+      - name: is_hierarchy
+        description: Created under the business-account hierarchy. False or NULL on legacy links.
+      - name: channel_id
+        description: The sales channel (business_management channels.id).
+      - name: expires_at
+        description: When the link stops accepting payment, UTC.
+      - name: max_uses
+        description: Use cap. NULL means no cap.
+      - name: reserved_count
+        description: Opens that reserved the link, as tallied at source.
+      - name: paid_count
+        description: Successful payments through the link, as tallied at source.
+      - name: failed_count
+        description: Failed payments through the link, as tallied at source.
+      - name: last_paid_at
+        description: Last successful payment through the link, UTC.
+      - name: reservation_at
+        description: Last time an open reserved the link, UTC.
+      - name: created_at
+        description: Link creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payment_v2__payment_link_consumption
+    description: >
+      Redacted copy of LiteCore payment_v2.payment_link_consumption, the
+      latest version of every payment-link open, one row per id. link_id
+      joins payment_v2__payment_link. Removed columns: ip_address,
+      user_agent, session_id and hosted_url. Status and timing stay.
+      Rebuilt every morning.
+    columns:
+      - name: id
+        description: The open id (uuid). payments.payment_link_consumption_id references it.
+        tests: [not_null, unique]
+      - name: link_id
+        description: The link opened.
+        tests: [not_null]
+      - name: status
+        description: PENDING, PAID, FAILED or EXPIRED.
+      - name: consumed_at
+        description: When the shopper opened the link, UTC.
+      - name: completed_at
+        description: When the resulting payment ended, UTC. NULL while PENDING.
+      - name: created_at
+        description: Row creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: checkout_session__checkout_sessions
+    description: >
+      Redacted copy of LiteCore checkout_session.checkout_sessions, the
+      latest version of every hosted checkout session, one row per id.
+      Removed columns: customer, order_data, metadata, payment_url,
+      redirect_urls, idempotency_key and splits. Links to payments only
+      through (merchant_id, order_id); several sessions or payments can
+      share one order. status is written lazily at source, so Pending
+      past expires_on means expired. Test merchants are included, filter
+      with core.test_merchants. Amount in minor units. Rebuilt every
+      morning.
+    columns:
+      - name: id
+        description: The session id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The account that owns the session (payments.merchant_id).
+      - name: acting_business_account_id
+        description: >
+          Business account that created the session on the merchant's
+          behalf. NULL on every row so far.
+      - name: order_id
+        description: >
+          The merchant's order reference, the only link to payments
+          together with merchant_id.
+      - name: status
+        description: >
+          Pending, Completed or Failed as at source. Expiry is never
+          written back, so read Pending past expires_on as expired.
+      - name: amount
+        description: Session amount in minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: three_ds_required
+        description: The merchant asked for 3DS on this session.
+      - name: processing_type
+        description: REGULAR or MOTO.
+      - name: channel_id
+        description: The sales channel. The literal default on a few rows.
+      - name: expires_on
+        description: When the hosted page stops accepting payment, UTC. Default 24 h after created_at.
+      - name: created_at
+        description: Session creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: ledger__account
+    description: >
+      Redacted copy of LiteCore ledger.account, the latest version of every
+      ledger account, one row per id. Removed columns: account_number,
+      virtual_iban and opened_by. Merchant acceptance pools and wallets,
+      scheme pools and system accounts. available_balance is minor units
+      as of the latest version. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The ledger account id (uuid). ledger__entry.account_id references it.
+        tests: [not_null, unique]
+      - name: name
+        description: Account display name, for example a merchant's acceptance pool for one scheme.
+      - name: direction
+        description: Normal balance side, CREDIT or DEBIT.
+      - name: status
+        description: ACTIVE.
+      - name: tag
+        description: >
+          Account role. ACCEPTANCE_POOL (a merchant's card acceptance
+          balance per scheme), WALLET or INTERNAL (system accounts).
+      - name: type
+        description: Accounting class. LIABILITY, ASSET or INCOME.
+      - name: owner_type
+        description: MERCHANT, SCHEME or SYSTEM.
+      - name: owner_product_type
+        description: >
+          The owner's product. AGGREGATOR, ORCHESTRATOR or ACQUIRER. NULL
+          on scheme and system accounts.
+      - name: owner
+        description: The owner id. For MERCHANT accounts the merchant id (payments.merchant_id).
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: available_balance
+        description: Balance in minor units as of the latest version.
+      - name: description
+        description: Account purpose text as at source.
+      - name: reference
+        description: >
+          Sub-account key within owner, tag and currency. main, or NULL
+          on rows from before ledger migration 018 (2026-08-31).
+      - name: last_transaction_at
+        description: Last entry posted to the account, UTC.
+      - name: created_at
+        description: Account opened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: ledger__entry
+    description: >
+      Redacted copy of LiteCore ledger.entry, the latest version of every
+      journal entry, one row per id. No columns removed, the table holds
+      no PII. account_id joins ledger__account. external_reference_id is
+      the payment operation (payment_v2__payment_operations.id) or
+      settlement leg that caused the entry. The debit and credit legs of
+      one posting share parent_transaction_id. Amounts are minor units.
+      Rebuilt every morning.
+    columns:
+      - name: id
+        description: The entry id (uuid).
+        tests: [not_null, unique]
+      - name: source
+        description: What produced the entry. payment, transfer or issuing.
+      - name: method
+        description: Card brand of the payment behind the entry. MADA, VISA or MASTERCARD. NULL on transfers.
+      - name: external_reference_id
+        description: >
+          The payment operation (payment_v2__payment_operations.id) or
+          settlement leg that caused the entry.
+      - name: type
+        description: >
+          Entry type. CAPTURE_PAYMENT, REFUND_PAYMENT, REVERSAL_PAYMENT,
+          HOLD_REFUND_PAYMENT, HOLD_EXTERNAL_SETTLEMENT,
+          EXTERNAL_SETTLEMENT, RELEASE_EXTERNAL_SETTLEMENT or
+          INTERNAL_SETTLEMENT.
+      - name: amount
+        description: Entry amount in minor units. direction gives the side.
+      - name: direction
+        description: DEBIT or CREDIT.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: exchange_rate
+        description: Conversion rate applied. 1 on every row today.
+      - name: available_balance_after
+        description: The account's balance after this entry, minor units.
+      - name: account_id
+        description: The ledger account (ledger__account.id).
+        tests: [not_null]
+      - name: parent_transaction_id
+        description: The posting the entry belongs to. Its debit and credit legs share it.
+      - name: order_id
+        description: Position of the entry within its posting, 1 upwards. Not a merchant order.
+      - name: hold_at
+        description: When the funds were put on hold, UTC. Hold entries only.
+      - name: captured_at
+        description: When a held amount was captured, UTC.
+      - name: released_at
+        description: When a hold was released, UTC.
+      - name: expires_at
+        description: Hold deadline, UTC. NULL on legacy age-based holds.
+      - name: created_at
+        description: Entry posted, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: settlement__account
+    description: >
+      Redacted copy of LiteCore settlement.account, the latest version of
+      every settlement account, one row per id. Removed columns:
+      created_by and updated_by. A merchant's payout destination, INTERNAL
+      (wallet) or EXTERNAL (bank).
+      settlement__instruction.destination_account_id references it.
+      Rebuilt every morning.
+    columns:
+      - name: id
+        description: The settlement account id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The merchant (payments.merchant_id).
+      - name: type
+        description: INTERNAL (the merchant's wallet) or EXTERNAL (a bank account).
+      - name: entity_id
+        description: The destination's id in the system that holds it.
+      - name: status
+        description: ACTIVE.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: created_at
+        description: Account creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: settlement__settlement_window
+    description: >
+      Redacted copy of LiteCore settlement.settlement_window, the latest
+      version of every settlement window, one row per id. Removed columns:
+      created_by and updated_by. A window is one merchant's payout batch
+      for one collection day and cycle. settlement__transaction rows are
+      its legs, settlement__instruction rows its payouts. Amounts are
+      minor units. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The window id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The merchant paid out (payments.merchant_id).
+      - name: cycle_id
+        description: The settlement cycle (frequency and cutoff) the window follows.
+      - name: value_date
+        description: >
+          When the payout becomes executable, UTC. Collection day plus
+          the cycle's frequency, rolled past the KSA weekend.
+      - name: closing_date
+        description: When every instruction finished and the window completed, UTC. NULL while open.
+      - name: window_start
+        description: Start of the operations the window collects, UTC. NULL on older windows.
+      - name: window_end
+        description: End of the operations the window collects, UTC. NULL on older windows.
+      - name: collection_date
+        description: The KSA calendar day the window collects on.
+      - name: status
+        description: OPENED, MATURED (ready for payout), IN_PROGRESS, SUCCESS or FAILED.
+      - name: total_instructions
+        description: Payout instructions in the window. NULL until they are created.
+      - name: total_amount
+        description: Gross sales in the window, minor units (sum of the legs' amount).
+      - name: settled_amount
+        description: Net amount payable after fees, minor units (sum of the legs' settled_amount).
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: reviewed_at
+        description: When back office accepted or rejected the window, UTC.
+      - name: created_at
+        description: Window opened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: settlement__instruction
+    description: >
+      Redacted copy of LiteCore settlement.instruction, the latest version
+      of every payout instruction, one row per id. No columns removed, the
+      table holds no PII. settlement_window_id joins
+      settlement__settlement_window, destination_account_id joins
+      settlement__account. Amount in minor units. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The instruction id (uuid).
+        tests: [not_null, unique]
+      - name: settlement_window_id
+        description: The window paid (settlement__settlement_window.id).
+        tests: [not_null]
+      - name: account_cycle_id
+        description: >
+          The account-cycle split rule that produced the instruction. A
+          window can pay several destinations by percentage.
+      - name: destination_account_id
+        description: The settlement account paid (settlement__account.id).
+      - name: amount
+        description: Instruction amount, minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: status
+        description: SUCCESS, IN_PROGRESS or FAILED.
+      - name: created_at
+        description: Instruction creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: settlement__transaction
+    description: >
+      Redacted copy of LiteCore settlement.transaction, the latest version
+      of every settlement leg, one row per id. No columns removed, the
+      table holds no PII. One leg per captured or refunded payment
+      operation. parent_payment_id joins payment_v2__payments,
+      external_reference_id joins payment_v2__payment_operations,
+      settlement_window_id the window that pays it. Amounts are minor
+      units. fees is a JSON array string. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The leg id (uuid).
+        tests: [not_null, unique]
+      - name: settlement_window_id
+        description: The window that pays the leg (settlement__settlement_window.id). NULL while unassigned.
+      - name: parent_payment_id
+        description: The payment (payment_v2__payments.id).
+      - name: external_reference_id
+        description: >
+          The capture or refund operation behind the leg (payment_v2__payment_operations.id).
+          On a reversal_adjustment row it is the reversed capture's operation id with a
+          ':reversal-adjustment' suffix.
+      - name: operation
+        description: >
+          capture, refund or reversal_adjustment (a claw-back booked when a reversal lands on a
+          sale whose window already paid out; negative, no fees, first seen 2026-09-14). NULL on
+          older rows.
+      - name: amount
+        description: Gross leg amount, minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: fees
+        description: JSON array string of fee_type and amount, minor units, for example mdr and flat.
+      - name: settled_amount
+        description: Net amount after fees, minor units.
+      - name: is_settled
+        description: The leg has been paid out.
+      - name: status
+        description: ACTIVE, HELD or REMOVED.
+      - name: hold_at
+        description: When the leg was held back from settlement, UTC.
+      - name: refunded_at
+        description: When the leg was refunded, UTC.
+      - name: removed_at
+        description: When the leg was removed from settlement, UTC.
+      - name: created_at
+        description: Leg creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  # payout database, added 2026-09-15.
+  - name: payout__transfer
+    description: >
+      Redacted copy of LiteCore payout.transfer, the latest version of every
+      money movement, one row per id. Removed columns: incoming_details,
+      comment, initiated_by and checker_id. direction splits OUTGOING
+      payouts from INCOMING wallet credits found on ANB statements, and
+      status means different things per direction. Amounts are minor
+      units. fees is a JSON string. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The transfer id (uuid). payout__transfer_transaction.transfer_id references it.
+        tests: [not_null, unique]
+      - name: direction
+        description: >
+          OUTGOING (a payout to a beneficiary, the default) or INCOMING
+          (a credit to a Business wallet parsed from an ANB statement).
+      - name: merchant_id
+        description: >
+          The account that owns the movement (business_entities.business_id).
+          NULL on INCOMING rows the ledger has not matched to a wallet.
+      - name: beneficiary_id
+        description: The destination (payout__beneficiary.id). NULL on INCOMING rows.
+      - name: instruction_settlement_id
+        description: >
+          The settlement instruction this payout executes
+          (settlement__instruction.id). NULL on merchant-initiated
+          transfers and on INCOMING rows.
+      - name: external_unique_id
+        description: >
+          INCOMING only. The ANB statement line id, unique per row, used to
+          deduplicate statement replays.
+      - name: amount
+        description: Amount sent or received, minor units.
+      - name: total_amount
+        description: amount plus the fee legs in fees, minor units. Equal to amount on INCOMING rows.
+      - name: fees
+        description: >
+          JSON array string of fee_type and amount, minor units, for
+          example flat and vat. NULL when no fee applied.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: status
+        description: >
+          Lifecycle state, read with direction. OUTGOING: created,
+          funds_reserved, sms_otp_sent, sms_otp_verified, ivr_otp_sent,
+          otp_failed, pending_checker, rejected, approved,
+          initiation_failed, initiated, paid, verification_failed, settled,
+          not_settled, discrepancy, manual_review, completed, failed.
+          INCOMING: received, completed, manual_review (no wallet found).
+          completed and manual_review appear on both sides.
+      - name: value_date
+        description: Settlement value date on settlement-driven payouts. NULL elsewhere.
+      - name: otp_sent_at
+        description: When the maker's OTP was sent, UTC. Merchant-initiated payouts only.
+      - name: otp_expires_at
+        description: When that OTP expires, UTC.
+      - name: otp_verified
+        description: The maker passed the OTP step.
+      - name: checker_decision_at
+        description: When the checker approved or rejected, UTC.
+      - name: processed_at
+        description: When the bank transfer was handed to ANB, UTC.
+      - name: created_at
+        description: Transfer creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__transfer_transaction
+    description: >
+      Redacted copy of LiteCore payout.transfer_transaction, the latest
+      version of every payout event, one row per id. Removed columns:
+      request, response and comment. One row per hop of a transfer (ledger
+      hold, OTP, checker, ANB initiation and verification, statement
+      reconciliation, hold capture or release). Rebuilt every morning.
+    columns:
+      - name: id
+        description: The event id (uuid). ledger__entry.external_reference_id carries it on payout entries.
+        tests: [not_null, unique]
+      - name: transfer_id
+        description: The transfer (payout__transfer.id).
+      - name: event_type
+        description: >
+          What happened. TRANSFER_CREATED, LEDGER_HOLD_CREATED,
+          LEDGER_HOLD_CREATION_FAILED, SMS_OTP_SENT, SMS_OTP_VERIFIED,
+          IVR_OTP_SENT, OTP_VERIFICATION_FAILED, CHECKER_REVIEW_REQUESTED,
+          CHECKER_DECISION_RECORDED, OWNER_APPROVAL_RECORDED,
+          BANK_TRANSFER_INITIATION_RECORDED,
+          BANK_TRANSFER_VERIFICATION_RECORDED,
+          ACCOUNT_STATEMENT_RECONCILIATION_RECORDED, LEDGER_HOLD_CAPTURED,
+          LEDGER_HOLD_RELEASED, INCOMING_TRANSFER_RECEIVED,
+          INCOMING_TRANSFER_CREDIT_RECORDED. LEGACY_STATUS_RECORDED on
+          rows written before events were typed (2026-08).
+      - name: status
+        description: The transfer status after this event (payout__transfer.status values).
+      - name: external_status
+        description: >
+          The ANB transfer status returned (INITIATED, PROCESSED, PAID,
+          FAILED, RETURNED) or the reconciliation outcome. NULL on
+          internal events.
+      - name: external_ref
+        description: >
+          The ANB payment reference (PT...) from verification onwards, the
+          ANB request id at initiation, the statement line id on legacy
+          rows.
+      - name: created_at
+        description: When the event happened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__beneficiary
+    description: >
+      Redacted copy of LiteCore payout.beneficiary, the latest version of
+      every payout destination, one row per id. Removed columns: details,
+      name, creditor_party_name, created_by and checker_id. A merchant's
+      bank accounts for payouts (tag transfer) and for settlement (tag
+      settlement), with the maker-checker state. Soft deletes stay as
+      is_deleted = true. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The beneficiary id (uuid). payout__transfer.beneficiary_id references it.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The owning account (business_entities.business_id).
+      - name: instrument_id
+        description: The stored payment instrument (instrument-service id). NULL on most rows.
+      - name: type
+        description: Destination kind. iban on every row so far; card and wallet exist in code.
+      - name: tag
+        description: transfer (merchant-initiated payouts) or settlement (the settlement account).
+      - name: status
+        description: >
+          Maker-checker state. initiated, pending_verification,
+          verification_failed, verified, sms_otp_sent, sms_otp_verified,
+          ivr_otp_sent, otp_verified, otp_failed, pending_checker,
+          approved, rejected. settlement-tagged rows add
+          pending_backoffice_checker, backoffice_approved and
+          backoffice_rejected.
+      - name: external_status
+        description: The ANB account-verification result, Y or FAILED. NULL before verification.
+      - name: external_reference
+        description: The ANB verification reference (uuid). NULL before verification.
+      - name: is_deleted
+        description: Soft-deleted at source, including duplicates removed by migration 018/021.
+      - name: maker_country_code
+        description: ISO country of the maker at creation, used by the high-risk-country check.
+      - name: otp_sent_at
+        description: When the maker's OTP was sent, UTC.
+      - name: otp_expires_at
+        description: When that OTP expires, UTC.
+      - name: otp_verified
+        description: The maker passed the OTP step.
+      - name: checker_decided_at
+        description: When the checker approved or rejected, UTC.
+      - name: created_at
+        description: Beneficiary creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__beneficiary_transaction
+    description: >
+      Redacted copy of LiteCore payout.beneficiary_transaction, the latest
+      version of every beneficiary event, one row per id. Removed columns:
+      request, response and comment. One row per hop of a beneficiary's
+      onboarding (ANB verification, OTP, checker or back-office decision).
+      Rebuilt every morning.
+    columns:
+      - name: id
+        description: The event id (uuid).
+        tests: [not_null, unique]
+      - name: beneficiary_id
+        description: The beneficiary (payout__beneficiary.id).
+      - name: status
+        description: The beneficiary status after this event (payout__beneficiary.status values).
+      - name: external_status
+        description: The ANB verification result, Y or FAILED. NULL on internal events.
+      - name: external_reference
+        description: The ANB verification reference (uuid). NULL on internal events.
+      - name: created_at
+        description: When the event happened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__topup
+    description: >
+      Redacted copy of LiteCore payout.topup, the latest version of every
+      wallet top-up, one row per id. Removed column: checkout_session_data.
+      A merchant funds a Business wallet by paying a hosted checkout
+      session. Amounts are minor units. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The top-up id (topup- prefix plus uuid). payout__topup_transaction.topup_id references it.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The account funding the wallet (business_entities.business_id).
+      - name: wallet_id
+        description: The wallet credited (ledger__account.id).
+      - name: checkout_session_id
+        description: The checkout session paid (checkout_session__checkout_sessions.id).
+      - name: amount
+        description: Top-up amount, minor units.
+      - name: currency
+        description: ISO 4217 code. SAR only today.
+      - name: status
+        description: initiated, completed, failed or expired.
+      - name: expires_at
+        description: When the checkout session expires, UTC.
+      - name: created_at
+        description: Top-up creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: payout__topup_transaction
+    description: >
+      Redacted copy of LiteCore payout.topup_transaction, the latest
+      version of every top-up event, one row per id. Removed columns:
+      request, response and comment. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The event id (uuid).
+        tests: [not_null, unique]
+      - name: topup_id
+        description: The top-up (payout__topup.id).
+      - name: event_type
+        description: CHECKOUT_SESSION_CREATED, LIMIT_RESERVED, LIMIT_RELEASED or FINAL_STATUS_UPDATED.
+      - name: status
+        description: The top-up status after this event (payout__topup.status values).
+      - name: external_ref
+        description: The checkout session id, the top-up id, or the expiry job reference, per event_type.
+      - name: created_at
+        description: When the event happened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.

@@ -1,10 +1,8 @@
-"""The dbt project must at least parse (SQL compiles, refs/sources/vars
-resolve, profile renders) without a BigQuery connection — the same gate
-CI gets, since pr.yaml runs pytest but has no GCP credentials.
+"""The dbt project must parse (SQL compiles, refs / sources / vars resolve,
+profile renders) without a BigQuery connection: CI has no GCP credentials.
 
-Shells out to the `dbt` entry point in the workspace venv (resolved next
-to the running interpreter) rather than importing dbt, so the test stays
-hermetic to dbt's global CLI state.
+Shells out to the venv's `dbt` entry point instead of importing dbt, so
+dbt's global CLI state never leaks into the test run.
 """
 
 import os

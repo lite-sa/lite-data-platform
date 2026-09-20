@@ -1,15 +1,9 @@
-"""smart_routing database → {BQ_DATASET_RAW}.smart_routing__{profile,
-routing_rule,transaction_evaluation} — one pipeline per source database
-(a pipeline connects to exactly one DB).
+"""smart_routing database -> {BQ_DATASET_RAW}.smart_routing__{profile,
+routing_rule,transaction_evaluation}.
 
-`profile` and `routing_rule` are small mutable routing-config tables: full
-extract every run, `replace` disposition — same interim pattern as
-`merchants`/`business_entities` (snapshot_date partitioning is the target
-design, not yet implemented). `transaction_evaluation` is the per-
-transaction routing-decision log: mutable, timestamped, watermarked on
-`updated_at` with the safety-lag cap, append disposition — same shape as
-`payments`/`payment_operations` (see utils/dlt_helpers.py and the README's
-watermark design).
+`profile` and `routing_rule` are small config tables: full extract every
+run, `replace` disposition. `transaction_evaluation` is the routing-decision
+log: incremental append on `updated_at` with the safety-lag cap.
 """
 
 from __future__ import annotations
@@ -28,53 +22,6 @@ from app_etl.utils.dlt_helpers import (
 
 DATABASE = "smart_routing"
 
-# No PII on either routing-config table — every column is included.
-PROFILE_COLUMNS = [
-    "id",
-    "merchant_id",
-    "name",
-    "status",
-    "is_default",
-    "is_deleted",
-    "description",
-    "created_at",
-    "updated_at",
-]
-
-ROUTING_RULE_COLUMNS = [
-    "id",
-    "name",
-    "type",
-    "rule_definition",
-    "profile_id",
-    "priority",
-    "scope",
-    "is_deleted",
-    "created_at",
-    "updated_at",
-]
-
-# `transaction_initiated_message` excluded: it reads as the raw inbound
-# event payload that kicked off the evaluation, same PII-risk shape as
-# payments.customer/device/threeds_* and payment_operations.raw_provider_*.
-# Everything else here is routing-engine output (matched_rules,
-# routing_obj) or identifiers, not source request data.
-TRANSACTION_EVALUATION_COLUMNS = [
-    "id",
-    "main_transaction_evaluation_id",
-    "transaction_id",
-    "payment_id",
-    "operation_type",
-    "matched_rules",
-    "routing_obj",
-    "gateway_id",
-    "status",
-    "published_event",
-    "created_at",
-    "updated_at",
-    "merchant_id",
-]
-
 
 def run() -> None:
     settings = Settings.from_env()
@@ -85,7 +32,6 @@ def run() -> None:
             credentials=credentials,
             schema="public",
             table="profile",
-            included_columns=PROFILE_COLUMNS,
         ).apply_hints(
             # TODO: add snapshot_date partitions for point-in-time joins
             table_name=f"{DATABASE}__profile",
@@ -99,7 +45,6 @@ def run() -> None:
             credentials=credentials,
             schema="public",
             table="routing_rule",
-            included_columns=ROUTING_RULE_COLUMNS,
         ).apply_hints(
             # TODO: add snapshot_date partitions for point-in-time joins
             table_name=f"{DATABASE}__routing_rule",
@@ -113,7 +58,6 @@ def run() -> None:
             credentials=credentials,
             schema="public",
             table="transaction_evaluation",
-            included_columns=TRANSACTION_EVALUATION_COLUMNS,
             query_adapter_callback=cap_upper_bound,
         ).apply_hints(
             table_name=f"{DATABASE}__transaction_evaluation",

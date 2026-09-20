@@ -1,57 +1,84 @@
-# Daily pipeline DAG: extraction (parallel, one Cloud Run Job per source
-# database — PARKED, see below) -> dbt build. One Cloud Scheduler trigger
-# executes this workflow daily instead of staggered per-job schedules
-# guessing each other's runtimes. The AML alert-export stage this workflow
-# used to run after transform is parked with the alert mart stack (see
-# dbt_project.yml) — recover from git history (DAT-15-aml-p0) if it comes
-# back.
+# Daily pipeline: extraction (one Cloud Run Job per source database, one
+# after another) -> dbt build and the daily report exports in parallel. One
+# Cloud Scheduler trigger executes this workflow daily.
 #
-# Deploy (user-run, tracked in docs/provisioning.md):
+# Extraction is sequential because every pipeline writes the shared
+# `_dlt_pipeline_state` / `_dlt_loads` tables, and BigQuery allows 5 writes
+# per 10 s per table. Before fanning the extracts out again, cap concurrent
+# state writers at four.
+#
+# The Slack daily summary is not in this DAG: it runs on its own scheduler
+# trigger and refuses to post unless this workflow's transform stage
+# already ran for the day.
+#
+# A failed job fails the execution, so dbt never builds on a partial
+# extract. No retry policy: fix the cause, then rerun the whole workflow.
+# Reruns are safe (watermarked or full-extract pipelines, full-restate dbt,
+# overwriting exports).
+#
+# Deploy:
 #   gcloud workflows deploy litecore-daily \
 #     --source=apps/app_etl/workflows/daily_pipeline.yaml \
 #     --location=me-central2 \
-#     --service-account=<SA with run.jobs.run on the jobs below>
-#
-# A failed job fails its connector call, which fails the whole execution —
-# the next stage never runs on a partial predecessor. No retry policy in
-# v1: a rerun is a manual `gcloud workflows run litecore-daily
-# --location=me-central2` after fixing the cause.
+#     --service-account=<SA with run.invoker on the jobs below + run.viewer>
+# Rerun:
+#   gcloud workflows run litecore-daily --location=me-central2
 
 main:
   steps:
-    # TODO(extract): PARKED — dev ingestion from Cloud Run is blocked on
-    # the read-replica / network path (docs/provisioning.md, Phase A).
-    # Until then the workflow runs transform -> export only, over whatever
-    # raw_test holds (loaded from laptops). Restore this as the first stage
-    # when source access lands; the per-database jobs
-    # (ingest-{payment-v2,user,business-management}, command
-    # `python -m app_etl.ingestion.<database>`) also still need creating —
-    # the live ingest-* jobs are the stale per-table ones.
-    # - extract:
-    #     parallel:
-    #       branches:
-    #         - payment_v2:
-    #             steps:
-    #               - run_payment_v2:
-    #                   call: run_job
-    #                   args:
-    #                     job: ingest-payment-v2
-    #         - user:
-    #             steps:
-    #               - run_user:
-    #                   call: run_job
-    #                   args:
-    #                     job: ingest-user
-    #         - business_management:
-    #             steps:
-    #               - run_business_management:
-    #                   call: run_job
-    #                   args:
-    #                     job: ingest-business-management
-    - transform:
+    # One extract at a time. payment_v2 goes first: the largest extract
+    # and the one every mart depends on, so its failure surfaces before
+    # the rest have run.
+    - extract_payment_v2:
         call: run_job
         args:
-          job: transform-aml
+          job: ingest-payment-v2
+    - extract_ledger:
+        call: run_job
+        args:
+          job: ingest-ledger
+    - extract_smart_routing:
+        call: run_job
+        args:
+          job: ingest-smart-routing
+    - extract_business_management:
+        call: run_job
+        args:
+          job: ingest-business-management
+    - extract_settlement:
+        call: run_job
+        args:
+          job: ingest-settlement
+    - extract_checkout_session:
+        call: run_job
+        args:
+          job: ingest-checkout-session
+    - extract_pricing_engine:
+        call: run_job
+        args:
+          job: ingest-pricing-engine
+    - extract_payout:
+        call: run_job
+        args:
+          job: ingest-payout
+    # Both branches run after every extract succeeded and are independent:
+    # dbt reads raw and writes core, the exports read raw and write the
+    # egress bucket. A failure in either fails the execution.
+    - transform_and_export:
+        parallel:
+          branches:
+            - transform:
+                steps:
+                  - run_transform:
+                      call: run_job
+                      args:
+                        job: transform-dbt
+            - export:
+                steps:
+                  - run_export:
+                      call: run_job
+                      args:
+                        job: export-merchant-daily
 
 # Run one Cloud Run Job and block until its execution finishes; a failed
 # execution raises and fails the workflow. Region is pinned to me-central2
@@ -65,8 +92,7 @@ run_job:
           name: ${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/locations/me-central2/jobs/" + job}
           connector_params:
             # Total wait for the execution; must exceed the slowest job's
-            # runtime (the connector default of 1800s would mark a healthy
-            # but slow dbt build as failed).
+            # runtime (the connector default is 1800s).
             timeout: 3600
         result: execution
     - finished:
