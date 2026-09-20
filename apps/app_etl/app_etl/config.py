@@ -1,22 +1,16 @@
-"""Environment-driven settings — one flat object, no layering.
+"""Environment-driven settings, one flat object.
 
-Local dev keeps a gitignored `.env` at the repo root (see `.env.example`),
-loaded via python-dotenv; variables already set in the shell always win.
-Cloud Run jobs get the same variables as job env vars — no `.env` there.
+Local dev loads a gitignored `.env` at the repo root (see `.env.example`);
+shell variables win. Cloud Run jobs get the same variables as job env vars.
 
-The Postgres source has exactly two connection modes (set one, never both;
-non-ingestion jobs — transform — set neither and never touch Postgres, so
-`pg_credentials()` is where "no mode at all" fails, not here).
-Both are per-*instance*: the database name is NOT config — ingestion is one
-pipeline per source database, so each pipeline file states its own database
-and passes it to `pg_dsn()` / `pg_credentials()`.
+Ingestion jobs set exactly one Postgres connection mode; other jobs set
+neither. The database name is never config: each pipeline file passes its
+own to `pg_credentials()`.
 
-1. `PG_HOST` (+ `PG_PORT`, `PG_USER`) — the Cloud SQL Auth Proxy listening
-   on localhost (`--auto-iam-authn` mode: IAM username only, no password —
-   the proxy injects the token). This is the laptop mode.
-2. `PG_INSTANCE_CONNECTION_NAME` (+ `PG_IAM_USER`) — in-process Cloud SQL
-   IAM auth via the Python Connector; no password, no secret to rotate.
-   This is the Cloud Run mode. See `utils/dlt_helpers.py` `pg_credentials()`.
+1. `PG_HOST` (+ `PG_PORT`, `PG_USER`): Cloud SQL Auth Proxy on localhost
+   with `--auto-iam-authn`. The laptop mode.
+2. `PG_INSTANCE_CONNECTION_NAME` (+ `PG_IAM_USER`): in-process IAM auth via
+   the Cloud SQL Python Connector. The Cloud Run mode.
 """
 
 from __future__ import annotations
@@ -33,26 +27,17 @@ class Settings:
     gcp_project: str            # GCP project id (single dev project for now)
     bq_dataset_raw: str         # landing dataset in BQ, e.g. raw_litecore
 
-    # The dataset dbt builds into (staging views + marts). dbt reads this
-    # straight from the env in profiles.yml; the notify job is its second
-    # reader (queries the mart), which is why it lives here too.
+    # The dataset dbt builds into. dbt reads it from the env in
+    # profiles.yml; the notify job reads it here.
     bq_dataset_core: str = "core"
 
-    # Raw landing bucket (dlt staging), e.g. lite-data-dev-raw. Required by
-    # ingestion only — bq_pipeline() enforces it; the transform job leaves
-    # it unset.
+    # dlt staging bucket, e.g. lite-data-dev-raw. Ingestion jobs only.
     gcs_bucket: str | None = None
 
-    # Report egress bucket (merchant- and finance-facing files), e.g.
-    # lite-data-dev-egress. Required by export jobs only —
-    # settlement_daily_report enforces it; every other job leaves it unset. Distinct from gcs_bucket: staging is
-    # platform-internal with a 7-day lifecycle rule, egress persists and is
-    # read by the delivery side.
+    # Report egress bucket, e.g. lite-data-dev-egress. Export jobs only.
     gcs_bucket_egress: str | None = None
 
-    # Slack incoming-webhook URL for the daily summary — required by the
-    # notify job only, enforced there. Holder-can-post, so it's a secret:
-    # Secret Manager on Cloud Run, gitignored .env locally.
+    # Slack incoming-webhook URL, a secret. Notify job only.
     slack_webhook_url: str | None = None
 
     # Mode 1: Cloud SQL Auth Proxy on localhost, e.g. 127.0.0.1:5432
@@ -62,25 +47,21 @@ class Settings:
     # Mode 2: Cloud SQL IAM auth, e.g. lite-litecore-dev:me-central2:non-cde-postgres
     pg_instance: str | None = None
     pg_iam_user: str | None = None  # SA email *minus* ".gserviceaccount.com"
-    # "private" (PSA, same-VPC only) | "public" (laptop) | "psc" (Private
-    # Service Connect — required when the instance lives in a different,
-    # unpeered VPC/project, e.g. this job's lite-data-dev connecting to
-    # litecore dev's non-cde instance).
+    # "private" (same VPC) | "public" | "psc" (Private Service Connect, for
+    # an instance in another, unpeered VPC or project).
     pg_ip_type: str = "private"
 
     def pg_dsn(self, db: str) -> str:
-        """SQLAlchemy-style DSN for dlt's sql_table(credentials=...). Builds
-        it from the parts above so callers never hand-encode the '@' in an
-        IAM email themselves. `db` comes from the pipeline file — one
-        pipeline per source database.
+        """Proxy-mode DSN for database `db`; url-encodes the '@' in the IAM
+        user.
         """
         user = urllib.parse.quote(self.pg_user, safe="")
         return f"postgresql+psycopg://{user}@{self.pg_host}:{self.pg_port}/{db}"
 
     @classmethod
     def from_env(cls) -> Settings:
-        # usecwd: search from the working directory upwards (we run from the
-        # repo root), not from this installed module's location.
+        # usecwd: search upwards from the working directory, not from this
+        # module's install location.
         load_dotenv(find_dotenv(usecwd=True))
         if os.environ.get("PG_DSN"):
             raise ValueError(
@@ -90,9 +71,8 @@ class Settings:
             )
         pg_host = os.environ.get("PG_HOST")
         pg_instance = os.environ.get("PG_INSTANCE_CONNECTION_NAME")
-        # Both set is always a contradiction; neither set is fine — jobs
-        # that never touch Postgres (transform) run without a mode, and
-        # pg_credentials() fails loudly for the ones that need it.
+        # Neither set is fine here: pg_credentials() fails for the jobs that
+        # need a mode.
         if pg_host and pg_instance:
             raise ValueError(
                 "set at most one of PG_HOST or PG_INSTANCE_CONNECTION_NAME, got both"

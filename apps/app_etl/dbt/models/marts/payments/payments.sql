@@ -6,44 +6,22 @@
     )
 }}
 
--- One row per payment_id — the metric-ready payment facts. nb 023's
--- build_payment_facts() ported to SQL (supersedes the nb 018 phase-1 cut):
--- entry-mode classification across every pipeline, card facts from
--- instrument_data, the decision from the op log, 3DS and routing
--- milestones, outcome + failure taxonomy (decline_code_map seed), and the
--- milestone funnel string.
+-- One row per payment_id: entry-mode classification, card facts, the
+-- decision from the op log, 3DS and routing milestones, the outcome and
+-- failure taxonomy (decline_code_map seed), and the milestone funnel string.
 --
--- HOW THIS RUNS: `table` — a FULL REBUILD from the staging views on every
--- dbt build (daily via the workflow's transform step). Not incremental,
--- not microbatch: every run recomputes every payment from raw's latest
--- versions, so late mutations (a refund landing 40 days after capture)
--- restate automatically and any rerun is idempotent; --full-refresh is a
--- no-op by construction. Deliberate while raw is small — the rebuild
--- scans megabytes. Graduate to incremental MERGE (unique_key=payment_id,
--- changed keys detected from source updated_at on payments +
--- payment_operations + threeds, in-table watermark) when the daily scan
--- is worth avoiding; the partition/cluster layout above already matches
--- that design, so graduation changes only this config block + one CTE.
+-- Full rebuild from the staging views on every dbt build, so late mutations
+-- restate and reruns are idempotent. The partition / cluster layout already
+-- fits an incremental merge on payment_id if the daily scan grows.
 --
--- Grain: payment_id, tested unique. Test merchants are EXCLUDED via the
--- test_merchants seed — the one place their ids live in dbt. Payments
--- hand-deleted or ledger-reversed upstream during incident remediation
--- are EXCLUDED via the incident_excluded_payments seed: append-only raw
--- never sees a source DELETE, so without the seed those rows would stay
--- in the fact forever (first case: inc-2026-08-24-duplicate-webhooks).
--- PII: none — reads only the stg_ column allowlists, never raw. Adding a
--- column here means adding it to a staging view first, where the PII
--- boundary is enforced.
+-- Test merchants and incident-remediated payments are excluded through the
+-- test_merchants and incident_excluded_payments seeds. Reads only staging
+-- views: a new column goes into a staging view first.
 --
--- THE DECISION CONTRACT (nb 023 §4): the decision op family is AUTHORIZE
--- on the ecom pipeline and AUTHORIZE+CAPTURE on POS (a sale's PURCHASE
--- receipt persists as a CAPTURE op with no AUTHORIZE ever existing; two
--- early rows kept the raw PURCHASE literal, normalized below). First
--- SUCCESS in the family is the decision — authorized_at is set on both
--- pipelines, so a POS sale and an ecom INSTANT authorize both witness
--- authorized and captured at the same instant and the auth-rate
--- arithmetic stays uniform. The LAST decision-family FAILURE carries the
--- failure facts; follow-up failures (refund/void declines) never do.
+-- Decision contract: the decision op family is AUTHORIZE on ecom and
+-- AUTHORIZE + CAPTURE on POS (a POS sale persists as a CAPTURE op with no
+-- AUTHORIZE). The first SUCCESS in the family is the decision and sets
+-- authorized_at. The last FAILURE in the family carries the failure facts.
 with
 
     test_merchants as (select merchant_id from {{ ref('test_merchants') }}),
@@ -91,9 +69,7 @@ with
 
     ops as (select * from {{ ref('stg_litecore__payment_operations') }}),
 
-    -- Per-payment op witnesses for the channel fallback: terminal_id on any
-    -- op is a POS-only fact (the ecom writers never set it), an op without
-    -- one is an ecom-writer fact.
+    -- Op witnesses for the channel fallback: only POS ops carry terminal_id.
     op_flags as (
 
         select
@@ -122,12 +98,10 @@ with
 
     ),
 
-    -- 3DS facts + milestone clocks of the LAST authentication attempt per
-    -- payment (nb 022 §3 contract, extended with the challenge clocks).
-    -- trans_status (the protocol verdict, Y/A = authenticated) is the source
-    -- of truth for authentication; the FSM adds only what the protocol
-    -- cannot say — EXPIRED is shopper abandonment. The one overlap
-    -- (AUTHENTICATED <=> Y/A) is guarded by a singular test.
+    -- 3DS facts and milestone clocks of the last authentication attempt per
+    -- payment. trans_status (Y/A = authenticated) is the source of truth;
+    -- the FSM status adds EXPIRED (shopper abandonment). A singular test
+    -- guards AUTHENTICATED <=> Y/A.
     threeds as (
 
         select
@@ -167,14 +141,10 @@ with
 
     ),
 
-    -- Channel (pipeline) first, then the entry mode within it — nb 023 §2 /
-    -- entry-mode doc §1. channel_type decides where present (since
-    -- 2026-08-18); older rows fall back to the op witnesses, and a threeds
-    -- row is an ecom witness for op-less payments parked in
-    -- REQUIRES_ACTION. terminal_management is not ingested, so the two POS
-    -- variants collapse into one 'pos'. The entry-mode CASE is a
-    -- first-match waterfall — the raw facts overlap (a link payment is
-    -- also a card payment), so order is the contract.
+    -- Channel first, then the entry mode within it. channel_type decides
+    -- where present (since 2026-08-18); older rows fall back to the op
+    -- witnesses, and a threeds row marks an op-less payment as ecom. The
+    -- entry-mode CASE is first-match: the facts overlap, so order matters.
     classified as (
 
         select
@@ -213,10 +183,8 @@ with
                 then 'pos'
                 when channel = 'unknown'
                 then 'unknown'
-                -- MOTO before payment_link: a link carries a processing_type
-                -- since 2026-08-20, and a link-delivered MOTO payment is a
-                -- MOTO payment — the declaration wins over the delivery
-                -- channel (ruled 2026-08-24; 6 real rows on prod).
+                -- MOTO before payment_link: a link-delivered MOTO payment
+                -- is a MOTO payment.
                 when processing_type = 'MOTO'
                 then 'moto'
                 when payment_link_id is not null
@@ -260,8 +228,8 @@ with
 
     ),
 
-    -- First decision SUCCESS — the decision. Ordered by the op's FSM
-    -- terminal moment (updated_at), notebook tie-breaks preserved.
+    -- First decision SUCCESS, ordered by the op's terminal moment
+    -- (updated_at).
     first_success as (
 
         select
@@ -471,12 +439,10 @@ with
 
     ),
 
-    -- Derived pass: canonical status, outcome, the per-pipeline failure
-    -- category (nb 023 §7 — POS discriminators in doc order: TMS reason /
-    -- device error / receipt outcome / response code; ecom: the 022 §5
-    -- reason strings then the connector-null fallback), the single-message
-    -- capture fold, and the gateway-called clock (ecom only — POS has no
-    -- gateway call).
+    -- Derived pass: canonical status, outcome, the failure category (POS:
+    -- TMS reason / device error / receipt outcome / response code; ecom:
+    -- reason strings, then the connector-null fallback), the single-message
+    -- capture fold, and the gateway-called clock (ecom only).
     facts as (
 
         select
@@ -551,14 +517,9 @@ with
 
     )
 
-    -- Minor→major divisor per ISO 4217 exponent, defined once for the
-    -- conversions below (NUMERIC division — exact). Exponent 2 covers
-    -- everything processed today; the exp-3
-    -- Gulf currencies are listed so a future BHD/KWD payment isn't silently
-    -- 10x off. No exp-0 currency expected — extend if one appears. Any NEW
-    -- currency, whatever its exponent, trips the warn-severity
-    -- accepted_values test on currency: it must, because cross-currency
-    -- summing policy is decided per consumer, not here.
+    -- Minor→major divisor per ISO 4217 exponent (NUMERIC division, exact).
+    -- The exponent-3 Gulf currencies are listed so a BHD/KWD payment is not
+    -- 10x off. A new currency trips the accepted_values test on currency.
     {% set minor_per_major = "if(currency in ('BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND'), 1000, 100)" %}
 
 select
@@ -595,12 +556,9 @@ select
     facts.created_at,
     facts.created_at_local,
     facts.source_updated_at,
-    -- witnessed milestones in canonical pipeline order (nb 023 §7). The
-    -- token order is fixed, not chronological, and 'failed' is terminal
-    -- only: a decision failure on a payment that also succeeded (a retried
-    -- auth, a failed POS follow-up receipt) stays in failed_at /
-    -- n_decision_failures but out of the string, where it would print
-    -- after 'captured' and read as a decline.
+    -- witnessed milestones in fixed pipeline order, not chronological.
+    -- 'failed' is terminal only: a failure on a payment that also succeeded
+    -- stays out of the string.
     array_to_string(
         [
             'created',
@@ -652,10 +610,9 @@ select
     facts.n_routing_rows,
     facts.n_routing_not_completed,
     facts.decision_duration_ms,
-    -- the net-auth-rate flag: the gateway/provider produced (or errored
-    -- while producing) a verdict. The category list IS the definition
-    -- (the gateway_declined + gateway_error stages) — flip membership
-    -- here and the summary's net rate follows.
+    -- the net-auth-rate flag: the gateway produced, or errored producing, a
+    -- verdict. This category list is the definition the summary's net rate
+    -- follows.
     coalesce(
         facts.authorized_at is not null
         or facts.failure_category in (

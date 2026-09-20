@@ -1,13 +1,8 @@
--- Rename/select only, plus the one derived column every time-of-day rule
--- needs: the local wall-clock timestamp. DATETIME() converts the stored
--- UTC instant into the business timezone and drops the offset.
+-- Rename/select only, plus the local wall-clock timestamp.
 --
--- The POS receipt facts live inside the metadata JSONB, not in top-level
--- columns (the earlier top-level external_operation_type select always
--- returned NULL — no such raw column exists). Extracted here as scalars;
--- the metadata blob itself (raw provider request/response payloads) never
--- leaves staging. receipt_outcome digs one level deeper because
--- raw_provider_response is stored as a JSON string inside the JSON.
+-- POS receipt facts live inside the metadata JSONB and are extracted as
+-- scalars; the blob itself never leaves staging. receipt_outcome reads one
+-- level deeper: raw_provider_response is a JSON string inside the JSON.
 with
     latest as (
 

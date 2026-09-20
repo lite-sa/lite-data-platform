@@ -1,17 +1,10 @@
--- Rename/select only, deduped to the latest version per key. Raw is
--- append-only — ingestion re-extracts a row on every source UPDATE, so raw
--- holds one row per (id, updated_at) version and every reader must come
--- through this dedup or joins fan out.
+-- Rename/select only, deduped to the latest version per key. Raw holds one
+-- row per (id, updated_at) version, so a join without this dedup fans out.
 --
--- instrument_data / channel_type landed at source 2026-08-17/18 — older
--- versions carry NULL (the mart's channel fallback covers them). JSONB keys
--- are snake_case at rest (CaseMapper runs before insert; confirmed on prod
--- rows, nb 023 — the TypeScript camelCase names return NULL). Only scalar
--- card facts are extracted; the instrument_data blob itself never leaves
--- staging, and the same rule holds for risk_result (presence + two keys)
--- and threeds/routing results (presence only). card_last_four is
--- masked-PAN display data (receipt-grade, not the PAN) — the card-level
--- join key nb 023 uses alongside card_brand.
+-- instrument_data / channel_type exist at source since 2026-08-17/18; older
+-- rows carry NULL. JSONB keys are snake_case at rest. Only scalar card facts
+-- are extracted: the instrument_data, risk_result, threeds and routing blobs
+-- never leave staging. card_last_four is masked-PAN display data.
 with
     latest as (
 

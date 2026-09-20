@@ -1,88 +1,22 @@
-"""Daily per-merchant transaction report, settlement-ledger spine (v2).
+"""Daily per-merchant transaction report on the settlement spine.
 
-Ports `notebooks/025-settlement-daily-report-v2.ipynb` (DAT-27, review of
-2026-08-30; design summary in docs/settlement-daily-report-v2-design.md).
-Same delivered layout as `merchant_daily_report` (the ops-signed 08-27
-sample, reused verbatim), different spine: instead of "payments created on
-the report day", the file for day D carries the settlement transactions of
-every window whose collection day is D. A refund books a new negative row
-on the day it happens, so old-payment refunds appear as ordinary rows of
-their own day; the payments-created spine cannot see them.
+The file for day D carries the settlement transactions of every window whose
+collection day is D. A refund or a claw-back is its own negative row on the
+day it books.
 
-Grain: one row per INCLUDED settlement transaction of the day's windows,
-plus one payment-grain row for each of the day's payments with no such
-transaction (declines and failures, sales not yet booked, voided sales).
-Payment operations are never rows here — they resolve enrichment
-(RRN / STAN / TID) and feed the gate. Since 2026-09-10 they also resolve
-the payment when a settlement row's `parent_payment_id` is NULL: the
-first such row (2026-09-09, a POS capture whose PaymentStatusChanged
-event reached the pricing engine without its payment id) still carried
-a valid `external_reference_id`, and op -> payment is the verified
-contract, so the row ships fully attributed and the notes name it; only
-a row that resolves neither way blocks. A payment appears twice only
-when a refund books: the sale row plus the negative refund row.
+Grain: one row per included settlement transaction, plus one payment-grain
+row (empty settlement columns) for each of the day's payments with no such
+transaction: declines, sales not yet booked, voided sales.
 
-Cutover 2026-08-31: this module replaced merchant_daily_report (the
-payments-created v1) as the sole producer of the delivered per-merchant
-files, after side-by-side output was byte-identical on 2026-08-28/29
-(8/8 files); v1 lives in git history. The daily job runs this module
-twice: per-merchant mode uploads the delivered files under
-merchant-reports/ (same blob layout and filenames as v1), and
---all-merchants uploads one combined platform-wide file (test merchants
-included) to the finance folder (ALL_MERCHANTS_GCS_PREFIX).
+Two modes: per-merchant files under merchant-reports/, and
+`--all-merchants`, one combined file (test merchants included) under
+finance-reports/.
 
-Union spine, for the 1:1 acceptance criterion: the pure settlement spine
-cannot see payments that never reached settlement (declined / failed
-payments, sales not yet booked, same-day voids), which the delivered file
-carries today with empty settlement columns. Removing rows from a
-delivered report is a contract change nobody has ruled on, so v2 appends
-those payments as payment-grain leftover rows through a verbatim copy of
-the old module's build path (`build_payment_rows`). On a day with no
-refunds, reversals or day-boundary rows the two exporters are
-byte-identical (verified on prod 2026-08-29 and 08-28: 8/8 files). The
-deltas that remain are the designed ones
-(docs/settlement-daily-report-v2-design.md case matrix):
+The gate (`run_checks`, `run_payment_checks`) runs on the whole spine before
+the merchant split: one failing row blocks every file of the day.
 
-- A refund is its own extra row in its own day's file, negative,
-  referencing the original payment (the old spine deduped it away).
-- A transaction whose window collects on a different Riyadh day than the
-  payment's creation moment shows settled on the window's day; the
-  creation day keeps the payment-grain row with empty settlement
-  columns (the old spine showed it settled on the creation day).
-- A same-day voided sale (row flipped to REMOVED) ships as a
-  payment-grain row with empty settlement columns, exactly like the old
-  spine after its REMOVED filter.
-- A claw-back (settlement `operation = reversal_adjustment`, LiteCore
-  CTR-921, first seen 2026-09-14) is a negative row of its own day
-  referencing the original payment, like a refund. Settlement books it
-  when a reversal lands on a sale whose window already paid out: the
-  sale row flips to REMOVED as before, and a new row for minus the
-  sale's amount and settled_amount goes into the merchant's current
-  OPENED window. Its `external_reference_id` is the reversed capture's
-  operation id plus `:reversal-adjustment`, it is born ACTIVE (no
-  `hold_at`), and it carries no `fees` of its own. The spine resolves
-  the operation through the stripped id and joins the original sale row;
-  `derive_adjustment_fees` fills the fee columns with the original fees
-  negated, because the ledger returned mdr and vat on the reversal, so
-  the delivered fee columns and the row tie-out both hold
-  (`amount - fees == settled_amount`). The gate requires the original
-  sale row to exist and be REMOVED and the amounts to mirror it; the
-  refund-shape and operation/sign rules know the operation. Never waive
-  these by id (notebooks/041).
-
-The gate is all-or-nothing per run: `run_checks` reads the whole spine
-before the merchant split, so one bad row blocks every merchant's file for
-that day. Two id-pinned waivers (`WAIVED_UNRESOLVED_TXNS`,
-`WAIVED_TIE_OUT_WINDOWS`) keep known, investigated rows from doing that,
-and `informational_notes` names them on every run that carries one. They
-were ported from notebooks/028 on 2026-09-05 so the daily job and the
-one-off range runs share one gate.
-
-TODO(finops sign-off): add `transaction_type` (SALE / REFUND) and the raw
-settlement `operation` (pay | capture | authorize | refund) to the layout
-as PROPOSED_ADDITIONS once finops signs off (nb 025 review 2026-08-30).
-`operation` already travels the spine for the operation/sign gate check;
-only the delivered header waits.
+TODO(finops sign-off): add `transaction_type` and the raw settlement
+`operation` to the delivered layout.
 """
 
 from __future__ import annotations
@@ -108,16 +42,11 @@ from app_etl.export.common import (
 )
 
 # ---------------------------------------------------------------------------
-# Contract constants — the delivered-file contract, owned solely here
-# since the 2026-08-31 cutover deleted merchant_daily_report.
+# Contract constants: the delivered-file contract
 # ---------------------------------------------------------------------------
 
-# The merchants in scope, id -> display name (the name feeds the report
-# filename slug, so a rename here changes the filename, deliberately —
-# and a KYB rename should be reflected here). The original two (CEO ask,
-# 2026-08-20 — same mids as notebooks/020/021) plus the 2026-08-24
-# KYB-approved batch. Widening to all merchants is a deliberate decision
-# (refund posture, file-count, layout sign-off), not a config default.
+# Merchants in scope, id -> display name. The name feeds the filename slug,
+# so a rename here renames the file.
 MERCHANTS = {
     "6b58b5d3-d381-4bf0-bce3-812c812e11d5": "fine table Company",
     "afc004ce-20a0-4dd0-86c3-e9de6324590b": "altawsil alashhal Company Ltd.",
@@ -133,57 +62,38 @@ MERCHANT_IDS = list(MERCHANTS)
 GCS_PREFIX = "merchant-reports"
 REPORT_TYPE = "daily_transactions"
 
-# The --all-merchants combined cut is a finance deliverable, shipped to
-# its own folder on the egress bucket (finance-director grant), never
-# under merchant-reports.
+# The --all-merchants file goes to its own finance folder, never under
+# merchant-reports.
 ALL_MERCHANTS_GCS_PREFIX = "finance-reports/daily_settlement"
 
-# Fee types always materialized as columns so a day without settled
-# payments (or a header-only file) keeps a stable schema; genuinely new
-# source fee types still appear dynamically alongside these.
+# Fee types that always get a column, so the header is stable on empty
+# days. New source fee types add columns after these.
 BASE_FEE_TYPES = ("mdr", "vat", "flat")
 BASE_FEE_COLS = [f"fee_{t}_minor" for t in BASE_FEE_TYPES]
 
 TERMINAL_WINDOW_STATUSES = ("SUCCESS", "FAILED")
 
-# Claw-back rows (LiteCore settlement-service CTR-921, 2026-09-03):
-# `operation` value and the suffix the service appends to the reversed
-# capture's operation id to build the row's external_reference_id
-# (transaction-window-remove.service.ts, REVERSAL_ADJUSTMENT_SUFFIX).
+# Claw-back rows (LiteCore CTR-921): the `operation` value, and the suffix
+# the service appends to the reversed capture's operation id to build the
+# row's external_reference_id.
 REVERSAL_ADJUSTMENT = "reversal_adjustment"
 REVERSAL_ADJUSTMENT_SUFFIX = ":reversal-adjustment"
 # The operations whose rows are negative by construction.
 NEGATIVE_OPERATIONS = ("refund", REVERSAL_ADJUSTMENT)
 
-# Gate waivers. Both are pinned to specific ids investigated 2026-09-01
-# and ported here from notebooks/028 on 2026-09-05, so the daily job and
-# the one-off range runs share one gate. Anything not listed still blocks.
+# Gate waivers, pinned to investigated ids. Anything not listed blocks.
 #
-# A manual VAT-deduct remediation entry, booked by the settlement team as
-# a settlement transaction with references that exist nowhere in
-# payment_v2 (amount 1 minor, fees [{vat: 19508}], settled -19507, in
-# alakhwa almutamayiza's 2026-08-26 window; cause confirmed by the
-# settlement team 2026-09-05). The window tie-out passes, so the
-# -195.07 SAR is genuinely in the payout and must stay in a finance file;
-# it ships with empty payment-level columns, as the 2026-08-30 one-off
-# range file did. Track J Q9 stays open on the two questions this waiver
-# does not answer (docs/settlement-daily-report-v2-design.md §10): whether
-# finance wants adjustments in this file or a separate adjustments report,
-# and whether settlement can mark them at source — until they can, every
-# new remediation entry blocks a day's files until someone adds its id.
+# A manual VAT-deduct remediation entry booked by the settlement team, with
+# references that exist nowhere in payment_v2. It is in the payout, so it
+# ships, with empty payment-level columns.
 WAIVED_UNRESOLVED_TXNS = frozenset({"e719e386-e8d9-4d48-99c9-f13c11924a12"})
 
-# Window deeff147 (merchant 97476ad7, collection day 2026-07-26) paid out
-# 1180 without deducting a -250 refund hold that is still HELD; the refund
-# op SUCCEEDed the same minute, so the money moved via the wallet/ledger
-# path and the hold row was orphaned (pre-0009 row, operation NULL). The
-# HELD row ships as usual; only this window's tie-out failure is waived.
+# A window paid out without deducting a refund hold that is still HELD (the
+# refund moved through the wallet path). Only its tie-out failure is waived.
 WAIVED_TIE_OUT_WINDOWS = frozenset({"deeff147-8301-44b0-9210-fecbdbf305de"})
 
-# Settlement columns the join contributes (post-rename) on the
-# payment-grain leftover path. Ensured to exist even when there are no
-# settlement rows at all, so empty and quiet days keep the same header as
-# busy ones. Minor-unit columns stay internal; only the keep-list ships.
+# Settlement columns on the payment-grain leftover path. Always present, so
+# empty days keep the same header. Minor-unit columns never ship.
 SETTLE_EXPORT_COLS = [
     "settlement_transaction_id",
     "settlement_status",
@@ -197,9 +107,8 @@ SETTLE_EXPORT_COLS = [
     "fee_total_minor",
 ]
 
-# The fixed keep-list: the ops sample layout (2026-08-27), column for
-# column, in order. RRN/STAN/TID are upper-case because the delivered
-# header is the contract.
+# The delivered layout, in order. The header is the contract (hence the
+# upper-case RRN/STAN/TID).
 EXPORT_COLUMNS = [
     "merchant_id",
     "merchant_name",
@@ -235,9 +144,8 @@ EXPORT_COLUMNS = [
 
 
 def export_columns(report: pd.DataFrame) -> list[str]:
-    """The keep-list plus any genuinely new fee-type columns the day's
-    fees JSON produced (the one sanctioned way the header grows) — their
-    major-unit versions only, appended after the fixed layout."""
+    """EXPORT_COLUMNS plus the major-unit column of any new fee type found
+    in the day's fees JSON."""
     extra_fees = sorted(
         c
         for c in report.columns
@@ -247,14 +155,14 @@ def export_columns(report: pd.DataFrame) -> list[str]:
 
 
 def merchant_slug(name: str, merchant_id: str) -> str:
-    """Filename-safe slug of the display name; falls back to the id
-    prefix when nothing survives (e.g. a fully non-Latin name)."""
+    """Filename-safe slug of the display name; the id prefix when nothing
+    survives (a fully non-Latin name)."""
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
     return slug or merchant_id[:8]
 
 
 # ---------------------------------------------------------------------------
-# Extraction — the settlement spine and its gate inputs
+# Extraction: the settlement spine and its gate inputs
 # ---------------------------------------------------------------------------
 
 
@@ -265,29 +173,19 @@ def fetch_window_transactions(
     end_day: date | None = None,
     all_merchants: bool = False,
 ) -> pd.DataFrame:
-    """The spine: EVERY settlement transaction (latest version) in the
-    in-scope merchants' windows collecting on the report day, REMOVED rows
-    included and flagged `included_in_window` (a reversal adds no row, it
-    flips the sale's row in place; filtering REMOVED in SQL would hide it
-    from the checks). Enrichment per the verified contract:
-    `external_reference_id` -> the operation, `parent_payment_id` -> the
-    payment (for a refund row: the ORIGINAL payment, deliberately), with
-    the operation's `payment_id` as the fallback when `parent_payment_id`
-    is NULL (`payment_resolved_via_op` flags those rows for the notes),
-    channels -> display name, merchant_directory -> merchant name. A
-    claw-back row (`operation = reversal_adjustment`) resolves its
-    operation through `original_operation_id` (the reference with the
-    `:reversal-adjustment` suffix stripped) and also joins the original
-    sale row it mirrors (`original_txn_status`, `original_amount_minor`,
-    `original_settled_amount_minor`, `original_fees`), which the gate
-    and `derive_adjustment_fees` read; NULL on every other row.
-    Incident-excluded payments stay in the spine so the per-window
-    tie-out sees complete windows; build_report drops them from the file.
+    """The spine: every settlement transaction in the in-scope merchants'
+    windows collecting on the report day. REMOVED rows stay, flagged
+    `included_in_window`, so the gate sees complete windows; so do
+    incident-excluded payments, which build_report drops.
 
-    `end_day` widens the extraction to the closed collection-day range
-    [report_day, end_day] for one-off range reports; the daily job never
-    passes it. `all_merchants=True` lifts the MERCHANTS allowlist to the
-    whole platform, test merchants included.
+    `external_reference_id` resolves the operation and `parent_payment_id`
+    the payment, with the operation's `payment_id` as fallback
+    (`payment_resolved_via_op`). A claw-back row resolves its operation
+    through `original_operation_id` (suffix stripped) and joins the sale row
+    it mirrors (`original_*` columns; NULL on other rows).
+
+    `end_day` widens to a collection-day range for one-off reports.
+    `all_merchants=True` lifts the MERCHANTS allowlist.
     """
     query = f"""
         with txn as (
@@ -307,8 +205,7 @@ def fetch_window_transactions(
         ),
         original as (
             -- The sale row a claw-back mirrors: same operation id, no
-            -- suffix. One per operation id (the earliest, should a retry
-            -- ever book two).
+            -- suffix. The earliest, if a retry booked two.
             select external_reference_id, status, amount, settled_amount, fees
             from {latest_version(f"{raw}.settlement__transaction")}
             where operation is distinct from @adjustment_operation
@@ -407,14 +304,11 @@ def fetch_payments(
     end_day: date | None = None,
     all_merchants: bool = False,
 ) -> pd.DataFrame:
-    """The day's payments for the in-scope merchants, latest version per id
-    (the dedup a stg_ model would own), with the merchant's display name
-    and the channel's display name (channels.id = payments.channel_id).
-    channel_merchant_id is the channel's owning business mapped back to
-    the natural merchant key — the cross-tenant guard, never exported.
-    Incident-excluded payments (EXCLUDED_PAYMENT_IDS) never enter this
-    frame. `end_day` widens to a creation-day range for one-off reports;
-    `all_merchants=True` lifts the allowlist, test merchants included.
+    """The day's payments for the in-scope merchants, with merchant and
+    channel display names. `channel_merchant_id` (the channel's owning
+    merchant) feeds the tenant guard and is never exported.
+    Incident-excluded payments are filtered out. `end_day` and
+    `all_merchants` as in fetch_window_transactions.
     """
     query = f"""
         select
@@ -451,10 +345,8 @@ def fetch_payments(
 def fetch_operations(
     client: bigquery.Client, raw: str, payment_ids: list[str]
 ) -> pd.DataFrame:
-    """The report's payments' operations, latest version per op — just the
-    columns pos_identifiers() parses. The receipt identifiers live in
-    idempotency_key (docs/payment-milestones-by-entry-mode.md §4); parsing
-    stays in pandas so it's unit-testable.
+    """Operations of the report's payments: the columns pos_identifiers()
+    parses.
     """
     query = f"""
         select o.payment_id, o.idempotency_key, o.created_at
@@ -481,14 +373,9 @@ def fetch_refund_reverse_ops(
     end_day: date | None = None,
     all_merchants: bool = False,
 ) -> pd.DataFrame:
-    """Successful REFUND / REVERSE ops for in-scope merchants whose event
-    day (op updated_at, Riyadh) is the report day, each flagged with
-    whether ANY settlement transaction references it. Feeds the notes: a
-    refund with no settlement row is settled from the merchant's wallet
-    account at Lite (ledger path, confirmed 2026-08-31), and a REVERSE
-    only flips the sale's row on its original day. `end_day` widens to an
-    event-day range for one-off reports; `all_merchants=True` lifts the
-    allowlist, test merchants included.
+    """Successful REFUND / REVERSE ops whose event day (op updated_at,
+    local) is the report day, flagged with whether any settlement
+    transaction references them. Feeds the notes only.
     """
     query = f"""
         select o.operation_type, o.id as op_id, o.payment_id,
@@ -516,18 +403,15 @@ def fetch_refund_reverse_ops(
 
 
 # ---------------------------------------------------------------------------
-# Shared transforms (verbatim from merchant_daily_report)
+# Shared transforms
 # ---------------------------------------------------------------------------
 
 
 def pos_identifiers(ops: pd.DataFrame) -> pd.DataFrame:
-    """One row per payment: RRN / STAN / TID from the earliest sale-shaped
-    idempotency_key. Sale receipts (SDK/webhook/reconcile paths) write
-    '<rrn>;<stan>;<tid>'; immediate reversals use ':' and the init /
-    device-error rows a random UUID — none of those are the sale, so only
-    ';'-delimited keys qualify, and the earliest one is the sale even when
-    a later refund receipt carries its own rrn. Ecom payments have no such
-    op and simply stay absent (NaN after the join).
+    """One row per payment: RRN / STAN / TID from the earliest
+    idempotency_key shaped '<rrn>;<stan>;<tid>' (the sale receipt).
+    Reversals use ':' and other rows a UUID, so they never qualify. Ecom
+    payments have no such op and stay absent.
     """
     keys = ops["idempotency_key"].astype("string")
     sale = ops.loc[keys.str.count(";").eq(2).fillna(False)]
@@ -544,9 +428,8 @@ def pos_identifiers(ops: pd.DataFrame) -> pd.DataFrame:
 
 
 def _empty_settlement() -> pd.DataFrame:
-    """Schema stand-in feeding the payment-grain leftover build, which by
-    design never sees a settlement row (a leftover payment is exactly one
-    the spine does not cover)."""
+    """Schema stand-in for the leftover build: a leftover payment has no
+    settlement row by definition."""
     return pd.DataFrame(
         columns=[
             "id",
@@ -566,10 +449,9 @@ def _empty_settlement() -> pd.DataFrame:
 
 
 def pivot_fees(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """fees is a JSON string of [{fee_type, amount, ...}] — parse once,
-    pivot to one column per fee type (missing type on a txn -> 0). Returns
-    the frame plus the fee column list (base types always present).
-    Keyed on `id` (the settlement transaction id in the source frame).
+    """Pivot the `fees` JSON string ([{fee_type, amount, ...}]) to one
+    column per fee type, keyed on `id`; a missing type is 0. Returns the
+    frame and the fee column list.
     """
     settle = settle.copy()
     fees_long = (
@@ -603,19 +485,17 @@ def pivot_fees(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 def pivot_fees_txn(spine: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """pivot_fees keyed on the settlement transaction id instead of a
-    frame whose txn id column is `id` (here `id` is reserved for the
-    payment, per the delivered layout)."""
+    """pivot_fees for the spine, where the transaction id column is
+    `settlement_transaction_id` (`id` is the payment's)."""
     renamed = spine.rename(columns={"settlement_transaction_id": "id"})
     pivoted, fee_cols = pivot_fees(renamed)
     return pivoted.rename(columns={"id": "settlement_transaction_id"}), fee_cols
 
 
 def dedupe_settlement(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """At most one settlement row per payment: keep the earliest (the sale),
-    count the rest in n_settlement_txns, report the payments affected.
-    Only the empty stand-in passes through here in this module — kept
-    verbatim so the leftover frame's schema matches the old exporter's.
+    """At most one settlement row per payment: keep the earliest, count all
+    in n_settlement_txns. Only the empty stand-in passes through here; it
+    fixes the leftover frame's schema.
     """
     settle = settle.sort_values("created_at", kind="stable").copy()
     settle["n_settlement_txns"] = settle.groupby("parent_payment_id")[
@@ -637,21 +517,15 @@ def dedupe_settlement(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 def is_reversal_adjustment(spine: pd.DataFrame) -> pd.Series:
-    """Row mask of claw-back rows, from `operation` (the one source of
-    truth for the row shape; NULL on pre-0009 rows is never a claw-back).
-    """
+    """Row mask of claw-back rows, from `operation` (NULL is never one)."""
     return spine["operation"].fillna("").str.lower().eq(REVERSAL_ADJUSTMENT)
 
 
 def derive_adjustment_fees(spine: pd.DataFrame) -> pd.DataFrame:
-    """Pure: fill `fees` on claw-back rows from the original sale row,
-    negated. Settlement books the claw-back with `settled_amount` net of
-    the original fees but no `fees` of its own (CTR-921), while the
-    ledger returned mdr and vat on the reversal; negating the original
-    fees is what makes both the delivered fee columns and the row
-    tie-out hold. Rows that already carry fees, and rows whose original
-    is missing, are left alone (the gate blocks the latter). Sets
-    `fees_derived_from_original` for the notes. Runs before the pivot.
+    """Fill `fees` on claw-back rows with the original sale's fees, negated.
+    Settlement books a claw-back net of fees but with no `fees` of its own,
+    so without this the row tie-out fails. Sets `fees_derived_from_original`.
+    Runs before the pivot.
     """
     spine = spine.copy()
     derive = (
@@ -676,10 +550,9 @@ def derive_adjustment_fees(spine: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_checks(spine: pd.DataFrame) -> list[str]:
-    """Report-blocking checks (nb 025 gate) — non-empty return means
-    nothing may be exported. Runs on the FULL spine (REMOVED rows and
-    incident-excluded payments included) so the per-window tie-out sums
-    complete windows.
+    """Report-blocking checks on the full spine (REMOVED rows and
+    incident-excluded payments included). A non-empty return blocks the
+    export.
     """
     failures: list[str] = []
     included = spine["included_in_window"].fillna(False).astype(bool)
@@ -688,10 +561,7 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
     if spine["settlement_transaction_id"].duplicated().any():
         failures.append("duplicate settlement transaction ids after dedup")
 
-    # Join contract: every row must resolve its operation and payment;
-    # an unresolved row is money we cannot attribute or describe. The
-    # waived adjustment entries are the one exception, excluded row by row
-    # so any other unresolved row still blocks.
+    # Every row must resolve its operation and payment, waived ids aside.
     waived = spine["settlement_transaction_id"].isin(WAIVED_UNRESOLVED_TXNS)
     no_op = ~spine["op_resolved"].fillna(False).astype(bool) & ~waived
     if no_op.any():
@@ -734,8 +604,7 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
     if bad_ccy:
         failures.append(f"non-SAR currency in scope: {sorted(bad_ccy)}")
 
-    # Row tie-out on included rows (verified on all non-REMOVED rows
-    # 2026-08-26, hence the scope), sign-correct for refunds.
+    # Row tie-out on included rows, sign-correct for refunds.
     tie_bad = included & (
         spine["amount_minor"] - spine["fee_total_minor"]
         != spine["settled_amount_minor"]
@@ -754,9 +623,8 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
     if neg_no_hold.any():
         failures.append(f"{int(neg_no_hold.sum())} negative rows without hold_at")
 
-    # Operation/sign cross-check (operation exists since settlement
-    # migration 0009; NULL on older rows, never checked). Refunds and
-    # claw-backs are the negative operations.
+    # Operation/sign cross-check. `operation` is NULL on rows older than
+    # settlement migration 0009; those are skipped.
     op_sign_bad = (
         included
         & spine["operation"].notna()
@@ -771,10 +639,8 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
             "amount sign disagree"
         )
 
-    # Claw-back contract (CTR-921): the row mirrors a sale row that the
-    # reversal flipped to REMOVED. No original, or an original still
-    # ACTIVE, is a row we cannot explain; amounts that do not mirror the
-    # original mean the service changed shape under us.
+    # Claw-back contract: the row mirrors a sale row the reversal flipped
+    # to REMOVED, with both amounts negated.
     no_original = adjustment & ~spine["original_txn_status"].eq("REMOVED")
     if no_original.any():
         failures.append(
@@ -797,9 +663,7 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
             "amounts do not mirror the original sale row"
         )
 
-    # Per-window tie-out: included rows must sum to the window's own
-    # settled_amount (reassignment adjusts both windows in one service
-    # transaction, so this holds mid-flight too).
+    # Per-window tie-out: included rows sum to the window's settled_amount.
     win_sums = (
         spine.assign(
             included_settled_minor=spine["settled_amount_minor"].where(included, 0)
@@ -827,18 +691,15 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
 
 
 def run_payment_checks(payments: pd.DataFrame, settle: pd.DataFrame) -> list[str]:
-    """Report-blocking checks on the payment-grain leftover path (verbatim
-    merchant_daily_report.run_checks, nb 014/021 lineage) — non-empty
-    return means nothing may be exported.
+    """Report-blocking checks on the payment-grain leftover path. A
+    non-empty return blocks the export.
     """
     failures: list[str] = []
     if payments["id"].duplicated().any():
         failures.append("duplicate payment ids after dedup")
 
     # Tenant guard: a resolved channel must belong to the payment's
-    # merchant — a mismatch would put another business's channel name in
-    # a merchant-facing file. (Verified clean on prod 2026-08-27; an
-    # unresolvable channel is NaN here and just ships a blank name.)
+    # merchant. An unresolvable channel ships a blank name.
     chan_mismatch = payments["channel_merchant_id"].notna() & (
         payments["channel_merchant_id"] != payments["merchant_id"]
     )
@@ -865,7 +726,7 @@ def run_payment_checks(payments: pd.DataFrame, settle: pd.DataFrame) -> list[str
             "!= payment merchant"
         )
 
-    # Row tie-out, blocking only once the window is terminal (nb 021 stance).
+    # Row tie-out, blocking only once the window is terminal.
     tie_bad = (settle["amount"] - settle["fee_total_minor"]) != settle[
         "settled_amount"
     ]
@@ -882,8 +743,8 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
     """Non-blocking observations, printed after the gate passes."""
     notes: list[str] = []
     included = spine["included_in_window"].fillna(False).astype(bool)
-    # A waiver must never apply silently: name the waived ids whenever the
-    # run carries one, so the log says why the gate stayed quiet.
+    # Name every waived id the run carries, so a waiver never applies
+    # silently.
     waived_txns = sorted(
         set(spine.loc[
             spine["settlement_transaction_id"].isin(WAIVED_UNRESOLVED_TXNS),
@@ -906,8 +767,7 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
             f"WAIVED per-window tie-out for {waived_windows}: stuck HELD "
             "refund hold"
         )
-    # The op fallback is not a waiver (the row is fully attributed), but
-    # every use means an upstream event lost its payment id: say so.
+    # Each op fallback means an upstream event lost its payment id.
     via_op = sorted(
         set(spine.loc[
             spine["payment_resolved_via_op"].fillna(False).astype(bool),
@@ -920,8 +780,6 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
             "through the operation's payment_id (upstream event lost the "
             f"payment id): {via_op[:5]}"
         )
-    # A claw-back ships as an ordinary negative row of its day; say so,
-    # and say when its fee columns came from the original sale row.
     clawbacks = spine.loc[is_reversal_adjustment(spine)]
     if len(clawbacks):
         derived = clawbacks.get(
@@ -973,9 +831,7 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
             "never in this day's file"
         )
     # A refund with no settlement row is settled from the merchant's
-    # wallet account at Lite (ledger path, settlement team 2026-08-31) —
-    # real money movement, deliberately not in this file. Was a blocking
-    # check until the wallet path was confirmed.
+    # wallet account, and is not in this file by design.
     wallet = day_ops.query("operation_type == 'REFUND' and not has_settlement_row")
     if len(wallet):
         notes.append(
@@ -987,29 +843,22 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
 
 
 # ---------------------------------------------------------------------------
-# Build — transaction-grain spine rows + payment-grain leftovers
+# Build: transaction-grain spine rows + payment-grain leftovers
 # ---------------------------------------------------------------------------
 
 
 def build_report(
     spine: pd.DataFrame, pos_ids: pd.DataFrame, fee_cols: list[str]
 ) -> pd.DataFrame:
-    """Pure: full spine -> the export frame in the delivered layout.
-    Drops REMOVED rows and incident-excluded payments (the checks
-    already ran on the full spine). Payment columns (`id`, `status`,
-    `payment_creation_date`, `created_at_local`) describe the row's
-    payment; `amount_sar` is the TRANSACTION's amount (equal to the
-    payment amount on sale rows, negative on refunds).
-
-    TODO(finops sign-off): append transaction_type + operation as
-    PROPOSED_ADDITIONS once finops signs off — see module docstring.
+    """Full spine -> export frame. Drops REMOVED rows and incident-excluded
+    payments. `id`, `status` and the creation dates describe the row's
+    payment; `amount_sar` is the transaction's amount (negative on refunds).
     """
     keep = spine["included_in_window"].fillna(False).astype(bool) & ~spine[
         "payment_id"
     ].isin(EXCLUDED_PAYMENT_IDS)
     report = spine.loc[keep].copy()
 
-    # Prod column names: id / status / creation dates are the payment's.
     report["id"] = report["payment_id"]
     report["status"] = report["payment_status"]
     report["payment_creation_date"] = (
@@ -1027,9 +876,7 @@ def build_report(
     report["last_four"] = instrument.map(lambda d: d.get("last_four"))
     report["card_brand"] = instrument.map(lambda d: d.get("card_brand"))
 
-    # Per-payment POS identifiers, the old module's earliest-sale-receipt
-    # semantics (identical values for sale rows). m:1 because a refund day
-    # puts two rows on one payment.
+    # m:1 because a refund day puts two rows on one payment.
     report = report.merge(
         pos_ids,
         on="payment_id",
@@ -1037,8 +884,8 @@ def build_report(
         validate="m:1",
     )
 
-    # SAR exponent 2 — same divisor as the marts; gated by the currency
-    # check. Signed: a refund row is negative through amount, fees, net.
+    # SAR exponent 2, guarded by the currency check. Signed: a refund row
+    # is negative through amount, fees and net.
     report["amount_sar"] = report["amount_minor"].astype("float") / 100
     report["settled_amount_sar"] = (
         report["settled_amount_minor"].astype("float") / 100
@@ -1051,12 +898,9 @@ def build_report(
 def build_payment_rows(
     payments: pd.DataFrame, settle: pd.DataFrame, pos_ids: pd.DataFrame
 ) -> pd.DataFrame:
-    """Pure: leftover payments + the (empty) settlement stand-in +
-    per-payment POS identifiers -> payment-grain export rows (verbatim
-    merchant_daily_report.build_report). Payments without a settlement txn
-    keep NaN in the settlement columns ("no settlement" is distinguishable
-    from "zero fee"); payments without a sale receipt (ecom, device
-    errors) keep NaN RRN/STAN/TID.
+    """Leftover payments -> payment-grain export rows. Settlement columns
+    stay NaN ("no settlement" differs from "zero fee"), as do RRN/STAN/TID
+    on payments without a sale receipt.
     """
     payments = payments.copy()
     payments["payment_creation_date"] = (
@@ -1065,13 +909,11 @@ def build_payment_rows(
     payments["created_at_local"] = (
         payments["created_at"].dt.tz_convert(LOCAL_TIMEZONE).dt.tz_localize(None)
     )
-    # SAR exponent 2 — same minor->major divisor as the payments mart.
+    # SAR exponent 2.
     payments["amount_sar"] = payments["amount"].astype("float") / 100
     payments["order_reference"] = payments["order_data"].map(
         lambda s: json.loads(s).get("reference") if isinstance(s, str) else None
     )
-    # Card facts from the instrument_data JSON — same extraction as
-    # stg_litecore__payments, sample-report column names.
     instrument = payments["instrument_data"].map(
         lambda s: json.loads(s) if isinstance(s, str) else {}
     )
@@ -1121,13 +963,9 @@ def write_daily_files(
     out_dir: Path,
     merchants: dict[str, str] | None = None,
 ) -> list[tuple[str, Path, int]]:
-    """One CSV per merchant — header-only when the merchant had no rows
-    (every in-scope merchant gets a file, that's the delivery contract).
-    Every file carries the full keep-list schema, empty columns included —
-    the header is fixed. The filename carries the merchant-name slug
-    (finance ask 2026-08-26) and pairs report day with run date; the
-    bucket path keeps the merchant_id, so uniqueness and the §J5 path
-    contract never depend on display names.
+    """One CSV per in-scope merchant, header-only when it had no rows. The
+    header is fixed. The filename carries the merchant-name slug, the report
+    day and the run date; the directory is the merchant_id.
     """
     cols = export_columns(report)
     written: list[tuple[str, Path, int]] = []
@@ -1151,12 +989,8 @@ def write_combined_file(
     run_date: date,
     out_dir: Path,
 ) -> tuple[Path, int]:
-    """Every merchant's rows in one CSV, same fixed header (merchant_id
-    and merchant_name lead the layout, so rows stay attributable), rows
-    grouped by merchant. A finance deliverable, not a merchant one: the
-    merchant delivery contract stays one file per merchant, and the
-    filename matches no merchant slug, so it can never collide with a
-    delivered file.
+    """Every merchant's rows in one CSV for finance, same header, grouped
+    by merchant.
     """
     rows = report.sort_values(["merchant_name", "created_at"]).reindex(
         columns=export_columns(report)
@@ -1180,8 +1014,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     report_day, run_date = resolve_days(args)
     settings = Settings.from_env()
-    # Explicit location, as everywhere: BigQuery defaults to the US
-    # multi-region, which the org residency policy rejects.
+    # BigQuery defaults to the US multi-region, which the org residency
+    # policy rejects.
     client = bigquery.Client(project=settings.gcp_project, location="me-central2")
     raw = f"{settings.gcp_project}.{settings.bq_dataset_raw}"
 
@@ -1193,17 +1027,13 @@ def main(argv: list[str] | None = None) -> None:
     day_ops = fetch_refund_reverse_ops(
         client, raw, report_day, all_merchants=args.all_merchants
     )
-    # The day's payments (v1 spine, incident-excluded already dropped):
-    # whichever of them the settlement spine does not cover ships
-    # payment-grain with empty settlement columns (see module docstring).
+    # Payments the settlement spine does not cover ship payment-grain.
     payments = fetch_payments(
         client, raw, report_day, all_merchants=args.all_merchants
     )
     empty_settle, _ = pivot_fees(_empty_settlement())
     empty_settle, _ = dedupe_settlement(empty_settle)
 
-    # Both gates: the settlement-spine gate, plus the payment-grain gate
-    # (duplicate payment ids, channel tenant guard) for the leftovers.
     failures = run_checks(spine) + run_payment_checks(payments, empty_settle)
     if failures:
         raise SystemExit(

@@ -1,30 +1,16 @@
-"""payout database → {BQ_DATASET_RAW}.payout__{transfer,transfer_transaction,
-beneficiary,beneficiary_transaction,topup,topup_transaction} — one pipeline
-per source database, all six tables incremental append on `updated_at`
-with the safety-lag cap (see utils/dlt_helpers.py). Three header/audit
-pairs, the payments + payment_operations pattern; the audit tables are not
-insert-only (rows get updated after creation), hence the same cursor.
+"""payout database -> {BQ_DATASET_RAW}.payout__{transfer,transfer_transaction,
+beneficiary,beneficiary_transaction,topup,topup_transaction}.
 
-Source facts that matter downstream:
+All tables incremental append on `updated_at` with the safety-lag cap; the
+`*_transaction` audit tables are updated after insert too.
 
-- `transfer.direction` splits OUTGOING payouts from INCOMING wallet credits
-  parsed from ANB statements (ALM-638), and `status` is polymorphic on it
-  (`completed` / `manual_review` exist on both sides).
-- `transfer.instruction_settlement_id` = settlement.instruction.id, set by
-  the execute-settlement workflow.
-- The ledger posts `external_reference_id` = transfer_transaction.id (the
-  audit row, not the header) on hold / capture / release — verify on prod.
-- `topup.checkout_session_id` -> checkout_session.checkout_sessions.id,
-  `topup.wallet_id` -> ledger.account.id.
-- Amounts are minor units; `fees` is a jsonb array landed as a JSON string
-  and `total_amount` = `amount` + Σ fees. No `updated_at` index at source.
+Joins: `transfer.instruction_settlement_id` -> settlement.instruction.id;
+`topup.checkout_session_id` -> checkout_session.checkout_sessions.id;
+`topup.wallet_id` -> ledger.account.id. `transfer.status` depends on
+`transfer.direction`. Amounts are minor units; `fees` lands as a JSON string.
 
-Skipped: `blocked_iban_attempt` (risk signal, no consumer yet),
-`cooldown_mechanism` (rows are hard-deleted past `lock_until`),
-`otp_tokens` (secrets + contact info), `databasechangelog*`.
-
-No column allowlist: ingest-everything posture; the trim map is in
-docs/schema-management.md §1 and the mirror models apply it.
+Skipped: `blocked_iban_attempt`, `cooldown_mechanism`, `otp_tokens`,
+`databasechangelog*`.
 """
 
 from __future__ import annotations

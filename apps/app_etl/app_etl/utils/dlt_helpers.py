@@ -1,7 +1,6 @@
 """Shared dlt plumbing for the per-database ingestion pipelines: safety-lag
-incremental helpers, the BigQuery/Parquet resource wrapper, and the
-pipeline factory. Plain functions, not a framework — each file under
-ingestion/ states only what is specific to its database and tables.
+cursor helpers, the BigQuery resource wrapper, source credentials, and the
+pipeline factory.
 """
 
 from __future__ import annotations
@@ -18,31 +17,25 @@ from google.cloud.sql.connector import Connector, IPTypes
 
 from app_etl.config import Settings
 
-# Postgres `now()` is transaction *start* time, so a row can commit after
-# the watermark has already advanced past its cursor value — and be skipped
-# forever. The extraction window's upper bound therefore trails wall clock
-# by SAFETY_LAG, applied as a plain SQL predicate via `cap_upper_bound`
-# (never via `incremental(end_value=...)`, which makes dlt use a mock,
-# discarded state and bypasses the persisted cursor). See the README's
-# watermark design for the full reasoning.
+# Postgres `now()` is transaction start time, so a row can commit after the
+# cursor has passed it. The extraction window therefore ends SAFETY_LAG
+# behind wall clock (see `cap_upper_bound`).
 SAFETY_LAG = timedelta(minutes=10)
 
-# Seed for the very first run only — once state exists, the persisted
-# last_value takes over.
+# Cursor seed for a pipeline's first run.
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def capped_incremental(cursor_column: str) -> dlt.sources.incremental:
-    """Incremental cursor with no `end_value`; pairs with `cap_upper_bound`
-    so dlt's persisted `last_value` state is never bypassed.
+    """Incremental cursor for `sql_table()`. No `end_value`: that would make
+    dlt skip its persisted cursor. `cap_upper_bound` sets the upper bound.
     """
     return dlt.sources.incremental(cursor_column, initial_value=EPOCH)
 
 
 def cap_upper_bound(query: Any, table: sa.Table, incremental: Any, engine: Any) -> Any:
-    """`query_adapter_callback` for `sql_table()`: adds `<cursor> <= now() -
-    SAFETY_LAG`, leaving room for in-flight transactions to commit before
-    their row is ever extracted.
+    """`query_adapter_callback` for `sql_table()`: adds
+    `<cursor> <= now() - SAFETY_LAG` to the extraction query.
     """
     cursor_column = incremental.cursor_path
     cutoff = sa.func.now() - sa.text(f"interval '{int(SAFETY_LAG.total_seconds())} seconds'")
@@ -52,20 +45,13 @@ def cap_upper_bound(query: Any, table: sa.Table, incremental: Any, engine: Any) 
 def bq_resource(
     resource: Any, partition: str | None = None, cluster: str | list[str] | None = None
 ) -> Any:
-    """Apply `autodetect_schema=True` at the resource level: BigQuery's
-    Parquet loader can't take an explicit JSON column type, which hits JSONB
-    and ARRAY source columns (both reflected as dlt's abstract `json`).
-    Resource-level (not destination-level) so the hint is baked into the
-    schema at extract time and applies to pending packages too. Applied
-    uniformly rather than only to json-bearing tables: one schema path, at
-    the cost of BQ inferring types instead of dlt declaring them — revisit
-    if a table ever needs dlt's exact types.
+    """BigQuery hints for a resource. `autodetect_schema` lets BigQuery infer
+    types, because its Parquet loader rejects an explicit JSON type (JSONB
+    and ARRAY source columns).
 
-    `partition` day-partitions the destination table on that column (a
-    timestamp column becomes BigQuery DAY time-partitioning). `cluster`
-    sets BigQuery clustering keys (up to 4 columns). Both are immutable at
-    CREATE: changing either on an existing table needs a drop + full
-    reload — run the pipeline once with `--refresh` (see `refresh_mode`).
+    `partition` day-partitions on that column; `cluster` takes up to 4
+    columns. BigQuery fixes both at table creation: changing either needs
+    one run with `--refresh`.
     """
     return bigquery_adapter(
         resource, autodetect_schema=True, partition=partition, cluster=cluster
@@ -73,19 +59,10 @@ def bq_resource(
 
 
 def refresh_mode(argv: list[str] | None = None) -> TRefreshMode | None:
-    """Entry-point flag shared by every pipeline: `--refresh` maps to dlt's
-    `refresh="drop_resources"`, which drops the resource's destination
-    tables *and* its persisted cursor state together, so the run re-extracts
-    from EPOCH. (Dropping only the BQ table would leave the watermark
-    behind and silently skip history.) A CLI arg rather than an env var so
-    it can't linger in a `.env` or Cloud Run job config — pass it per
-    execution. Cloud Run's `--args` replaces the job's whole args array
-    (module invocation included — jobs set command=python,
-    args=[-m, app_etl.ingestion.<db>]), so repeat the full list:
-    `gcloud run jobs execute ingest-<db>
-    --args="-m,app_etl.ingestion.<db>,--refresh"`. Needed
-    whenever a create-time-only BigQuery property (partitioning,
-    clustering) changes on an existing table.
+    """Parse `--refresh`: drop this pipeline's destination tables and cursor
+    state together, then reload from EPOCH. A CLI flag, not an env var, so it
+    applies to one execution only. On Cloud Run pass the full args list:
+    `--args="-m,app_etl.ingestion.<db>,--refresh"`.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -97,18 +74,11 @@ def refresh_mode(argv: list[str] | None = None) -> TRefreshMode | None:
 
 
 def pg_credentials(settings: Settings, db: str) -> str | sa.engine.Engine:
-    """What every pipeline passes to `sql_table(credentials=...)`. `db` is
-    the pipeline's source database — one pipeline per database, so it lives
-    in the pipeline file, never in the env.
+    """Credentials for `sql_table(credentials=...)` on database `db`.
 
-    Proxy mode returns a DSN string pointing at the Cloud SQL Auth Proxy on
-    localhost. Instance mode returns an Engine whose connections come from
-    the Cloud SQL Python Connector with IAM database auth: the connector
-    resolves the instance via the Admin API (billed to the ADC quota project
-    — see docs/gcp-auth-and-config.md), opens an mTLS tunnel, and mints a
-    per-connection OAuth token as the password. The Connector is
-    deliberately never closed — these are batch jobs; it dies with the
-    process.
+    Proxy mode returns a DSN for the Cloud SQL Auth Proxy on localhost.
+    Instance mode returns an Engine backed by the Cloud SQL Python Connector
+    with IAM auth. The Connector is never closed: it ends with the process.
     """
     if settings.pg_host:
         return settings.pg_dsn(db)
@@ -138,52 +108,27 @@ def pg_credentials(settings: Settings, db: str) -> str | sa.engine.Engine:
     return sa.create_engine(
         "postgresql+pg8000://",
         creator=getconn,
-        # IAM tokens live 60min; recycling under that keeps every pooled
-        # connection younger than its auth window on long extracts.
+        # IAM tokens live 60 min; recycle pooled connections before that.
         pool_recycle=1800,
     )
 
 
 def bq_pipeline(pipeline_name: str, settings: Settings) -> dlt.Pipeline:
-    """One dlt pipeline per source database (own name, own state — a
-    pipeline's resources share one connection), staging on GCS and loading
-    into `settings.bq_dataset_raw`. The staging prefix mirrors the dataset
-    name, so local test runs (BQ_DATASET_RAW=raw_test) can never collide
-    with the real raw_litecore landing area — and additionally carries the
-    pipeline name. The data tables are already disjoint across pipelines
-    (`<database>__<table>`), but the dlt *system* tables
-    (`_dlt_pipeline_state`) share a name, and dlt truncates a table's
-    staging folder before loading it
-    (`truncate_tables_on_staging_destination_before_load`, default True).
-    Two pipelines staging under one prefix therefore race: one truncates
-    the shared `_dlt_pipeline_state/` folder while the other's BigQuery
-    load is still reading its file — the terminal "matched no files"
-    failures seen when the daily workflow ran its ingest jobs in parallel
-    (2026-08-17). The per-pipeline prefix removes the collision for any
-    concurrent pair of runs, scheduled or manual. The BigQuery system
-    tables stay shared, though: every run lands one load job on
-    `_dlt_pipeline_state` and one INSERT on `_dlt_loads`, and BigQuery
-    allows 5 writes per 10 s per table, so the daily workflow runs the
-    ingest jobs one after another (2026-09-16). More than four pipelines
-    finishing together — overlapping manual runs — can still trip
-    `rateLimitExceeded` there.
+    """dlt pipeline for one source database: GCS staging, BigQuery
+    destination, dataset `settings.bq_dataset_raw`.
 
-    All pipelines share this one dataset — the dataset is the source
-    *system* (the LiteCore instance), not the database — so every resource
-    namespaces its destination table as `<database>__<table>` via a
-    `table_name` hint (double underscore, because database and table names
-    contain single ones). Different service databases will eventually carry
-    same-named tables; the prefix is what keeps them from colliding. A
-    genuinely different source system gets its own `raw_<system>` dataset,
-    not a prefix — see docs/schema-management.md.
+    The staging prefix is `<dataset>/<pipeline_name>`, so test datasets and
+    concurrent pipelines never share a staging folder (dlt truncates a
+    table's staging folder before each load). The `_dlt_*` state tables in
+    BigQuery are shared: BigQuery allows 5 writes per 10 s per table, so the
+    daily workflow runs the ingest jobs one after another.
     """
     if not settings.gcs_bucket:
         raise ValueError("GCS_BUCKET is required for ingestion staging")
     return dlt.pipeline(
         pipeline_name=pipeline_name,
-        # BigQuery defaults to the "US" multi-region, which the org policy
-        # (gcp.resourceLocations, me-central2 residency) rejects. Must match
-        # the region datasets/buckets were created in.
+        # BigQuery defaults to the US multi-region, which the org residency
+        # policy rejects.
         destination=dlt.destinations.bigquery(
             project_id=settings.gcp_project, location="me-central2"
         ),

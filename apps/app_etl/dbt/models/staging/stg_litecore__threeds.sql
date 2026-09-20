@@ -1,6 +1,5 @@
--- Rename/select only, deduped to the latest version per key — the standard
--- stg_ dedup contract. Grain: threeds_id (one 3DS authentication attempt;
--- a payment can have several — readers dedup per payment).
+-- Rename/select only, deduped to the latest version per key. Grain:
+-- threeds_id, one 3DS authentication attempt; a payment can have several.
 --
 -- The source mixes '' and NULL in the protocol columns — normalized to
 -- NULL here so downstream reads one absence value.
@@ -43,9 +42,7 @@ select
     nullif(version, '') as version,
     nullif(acs_challenge_mandated, '') as acs_challenge_mandated,
     instrument_id,
-    -- presence boolean only: the challenge witness is "both the ACS URL and
-    -- the CReq exist" (nb 022's contract); the payloads themselves stay
-    -- behind the allowlist
+    -- presence only: a challenge means both the ACS URL and the CReq exist
     coalesce(acs_url, '') != '' and coalesce(creq, '') != '' as challenge_presented,
     created_at,
     updated_at

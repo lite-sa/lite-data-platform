@@ -31,7 +31,7 @@ models:
       routing_evaluation_id — one COMPLETED row per authorize in the
       happy path plus retries; readers pick the first per payment).
       operation_type is stored lowercase and routing_obj keys are
-      snake_case — both prod-verified (nb 022/023) and baked into the
+      snake_case — both verified on prod and baked into the
       extraction.
     columns:
       - name: routing_evaluation_id

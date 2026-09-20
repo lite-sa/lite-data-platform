@@ -1,75 +1,17 @@
-"""Daily payments summary posted to Slack — the interim "morning readout"
-until Metabase carries dashboards.
+"""Daily payments summary posted to Slack.
 
-Reads the `payments_daily_summary` mart (re-pointed 2026-08-24, the nb
-023 fact port — until then it read raw directly while the fact's design
-iterated). Test merchants are already excluded and merchant names
-already denormalized in the fact; this job aggregates and formats,
-nothing more.
+Reads the `payments_daily_summary` mart for yesterday (Asia/Riyadh) and
+formats it: lifetime and month-to-date headline numbers, then the day's
+platform table, channel and card-brand breakdowns, and top merchants.
+Breakdown rows with a placeholder dimension (unknown / not_routed) are
+hidden but still count in the platform and Total rows.
 
-Message layout (platform table first since 2026-09-16; the
-headline-first rework settled 2026-08-25; the rate columns and the
-hiding rule date to the 2026-08-24 layout):
-- Headline numbers: the lifetime authorized-to-date line (count +
-  volume, summed over the whole mart), then a month-to-date table —
-  the 1st of the activity day's month through the activity day, never
-  the partial current day the mart also holds — of authorized count /
-  volume / avg txn by channel, with a Total row. Placeholder channels
-  are hidden as rows but still counted in the Total.
-- A "Stats for <activity day>" heading, then the platform table: the
-  rate columns (payments / authorized / declined / net attempts /
-  gross / net) over everything, hidden breakdown rows included, plus
-  the day's authorized volume and avg txn. The no_decision column
-  stays dropped from display (zero on a normal day); its payments
-  still count in the Payments column and the gross denominator per the
-  formulas below.
-- By channel, for the activity day: the same rate columns plus
-  authorized volume and avg txn.
-- By card brand: the rate columns only.
-- Hiding rule (both breakdowns): rows whose dimension is a null
-  placeholder (unknown / not_routed / the source's own UNKNOWN) are
-  hidden — they still count in the platform table, so hidden rows show
-  up there as the gap. A breakdown left empty by that rule drops its
-  section entirely.
-- Top merchants by authorized volume, with the same counts and rates
-  plus authorized volume and avg txn (= authorized volume / authorized
-  count, blank when a listed merchant authorized nothing).
-- Footer bullets: data basis, both rate definitions, what's coming.
+gross = authorized / (authorized + declined);
+net = authorized / (authorized + gateway_declined).
 
-Rates (nb 023 §8, the mart header's formulas):
-- gross = authorized / (authorized + declined) — equals authorized /
-  all payments whenever no_decision is zero, which is the normal day.
-- net attempts = authorized + gateway_declined; net = authorized / net
-  attempts — drops declines that never reached a gateway (validation,
-  risk, routing, 3DS, device errors, terminal cancellations): the
-  issuer/provider conversation only.
-
-The activity day is yesterday in Asia/Riyadh; the mart's
-payment_creation_date is already that local calendar date, so the query
-filters on it directly. The freshness guard is two-part, because the
-mart adds a staleness mode raw never had: (1) a successful payment_v2
-load must exist at/after the instant the local day closed (raw covered
-the day), and (2) the mart table must have been rebuilt at/after that
-load (the dbt build saw the fresh raw). Either failing raises — a
-broken ingest or a transform that hasn't run must yield a loud missing
-message, never a quiet stale one. The guard is what makes the
-scheduling safe: this job runs on its own Cloud Scheduler trigger,
-outside the pipeline workflow (extract → dbt build ∥ export), and a
-fire before the day's transform finished refuses rather than posts.
-Nothing retries a refusal later that day — give the trigger a generous
-buffer after the workflow's.
-
-Runs like the transform job: no Postgres mode, no GCS bucket — a BigQuery
-read plus one outbound HTTPS call. The webhook URL is the platform's first
-real secret (everything else is passwordless IAM): Secret Manager +
-`--set-secrets` on the Cloud Run Job, plain env var / `.env` locally.
-
-Known limits, deliberate for v1 (start simple, add later):
-- Counts sum across currencies; the amounts shown (to-date line,
-  top-merchants volume, fallback text) do too (~99.5% SAR; the mart's
-  amounts are major units, and the fact warns on any non-SAR currency).
-- No refunds, chargebacks, day-over-day deltas, or decline-reason
-  breakdown yet (the footer announces the last one).
+The job refuses to post unless a successful payment_v2 load exists at/after
+the close of the local day and the mart was rebuilt at/after that load. It
+runs on its own scheduler trigger; nothing retries a refusal that day.
 """
 
 from __future__ import annotations
@@ -88,16 +30,14 @@ from google.cloud import bigquery
 from app_etl.config import Settings
 
 TOP_MERCHANTS = 5
-# Mirrors dbt's local_timezone var (dbt_project.yml): the mart's
-# payment_creation_date is a local calendar date, so "yesterday" is a
-# local-midnight question.
+# Mirrors dbt's local_timezone var: payment_creation_date is a local
+# calendar date.
 LOCAL_TIMEZONE = "Asia/Riyadh"
 
 MART_TABLE = "payments_daily_summary"
 
-# The mart's null placeholders ('unknown', 'not_routed') and the
-# source's own UNKNOWN, compared casefolded — hidden from breakdowns,
-# still counted in the platform table.
+# Placeholder dimension values, compared casefolded: hidden from
+# breakdowns, still counted in the platform table.
 _NULL_DIMENSION_LABELS = {"unknown", "not_routed"}
 
 _METRIC_HEADERS = (
@@ -113,10 +53,8 @@ _METRIC_HEADERS = (
 def fetch_summary_rows(
     client: bigquery.Client, core: str, activity_day: date
 ) -> list[dict[str, Any]]:
-    """One row per merchant × card_brand × channel for the activity day —
-    the finest grain any table in the message needs; build_message()
-    re-aggregates per slice. Counts arrive as ints, amounts as Decimal
-    (NUMERIC, already major units).
+    """One row per merchant × card_brand × channel for the activity day;
+    build_message() re-aggregates per slice. Amounts are major units.
     """
     query = f"""
         select
@@ -142,9 +80,7 @@ def fetch_summary_rows(
 
 
 def fetch_platform_totals(client: bigquery.Client, core: str) -> dict[str, Any]:
-    """Lifetime authorized count + volume over the whole mart — the
-    "so far" line. Cheap: the mart is small and fully restated daily.
-    """
+    """Lifetime authorized count and volume over the whole mart."""
     query = f"""
         select
             coalesce(sum(authorized_count), 0) as authorized_count,
@@ -157,10 +93,9 @@ def fetch_platform_totals(client: bigquery.Client, core: str) -> dict[str, Any]:
 def fetch_month_authorized_by_channel(
     client: bigquery.Client, core: str, activity_day: date
 ) -> list[dict[str, Any]]:
-    """Authorized count + volume per channel, calendar month to date —
-    the 1st through the activity day. The upper bound matters: the mart
-    also holds a partial row-set for the current day (raw extracts past
-    local midnight), which must not leak into headline numbers.
+    """Authorized count and volume per channel, from the 1st of the month
+    through the activity day. The upper bound keeps out the mart's partial
+    current day.
     """
     query = f"""
         select
@@ -185,10 +120,9 @@ def fetch_month_authorized_by_channel(
 def fetch_first_covering_load(
     client: bigquery.Client, raw: str, cutoff: datetime
 ) -> datetime | None:
-    """Earliest successful payment_v2 load at/after the day-close cutoff,
-    from dlt's own ledger (status 0 = completed) — the first instant raw
-    covered the whole activity day. Missing table (e.g. a fresh dataset)
-    → None, which the guard treats as stale.
+    """Earliest successful payment_v2 load at/after the cutoff, from
+    `_dlt_loads` (status 0 = completed). None when there is none or the
+    table is missing.
     """
     query = f"""
         select min(inserted_at) as first_covering_load
@@ -209,9 +143,7 @@ def fetch_first_covering_load(
 
 
 def fetch_mart_modified(client: bigquery.Client, core: str) -> datetime | None:
-    """When the mart table was last rebuilt (BQ last-modified; the mart is
-    fully restated every dbt build, so this is the build instant).
-    """
+    """When the mart was last rebuilt (BigQuery last-modified)."""
     try:
         return client.get_table(f"{core}.{MART_TABLE}").modified
     except NotFound:
@@ -219,9 +151,7 @@ def fetch_mart_modified(client: bigquery.Client, core: str) -> datetime | None:
 
 
 def day_end_utc(activity_day: date) -> datetime:
-    """The UTC instant at which the local activity day closed — only an
-    ingestion run at/after this moment can have seen the whole day.
-    """
+    """The UTC instant at which the local activity day closed."""
     local_end = datetime.combine(
         activity_day + timedelta(days=1), time.min, tzinfo=ZoneInfo(LOCAL_TIMEZONE)
     )
@@ -234,19 +164,17 @@ def _sar(amount: Any) -> str:
 
 
 def _pct(rate: float | None) -> str:
-    # A slice where a denominator is empty (e.g. nothing decided) has no
-    # rate — say so rather than fake a zero.
+    # An empty denominator has no rate: show n/a, not 0%.
     return f"{rate:.1%}" if rate is not None else "n/a"
 
 
 def _merchant_label(row: dict[str, Any]) -> str:
-    # merchant_name is warn-severity nullable in the mart — degrade to
-    # truncated id.
+    # merchant_name can be NULL in the mart: fall back to the id prefix.
     return row["merchant_name"] or row["merchant_id"][:8]
 
 
 def _cell(text: str, bold: bool = False) -> dict[str, Any]:
-    # Slack requires non-empty text elements — a blank cell gets a space.
+    # Slack rejects empty text elements: a blank cell gets a space.
     element: dict[str, Any] = {"type": "text", "text": text or " "}
     if bold:
         element["style"] = {"bold": True}
@@ -261,10 +189,8 @@ def _table(
     column_settings: list[dict[str, Any]],
     header: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Native Block Kit `table` block — the client owns the layout, so it
-    reflows on mobile (a box-drawn code-block table was tried 2026-08-23
-    and wrapped badly there). Limits far above our scale: 100 rows, 20
-    cells/row, 10k chars per message summed across tables.
+    """Block Kit `table` block. Slack limits: 100 rows, 20 cells per row,
+    10k characters per message across tables.
     """
     all_rows = []
     if header:
@@ -278,10 +204,9 @@ def _section(text: str) -> dict[str, Any]:
 
 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """nb 023 §8's rate_table row over any subset of mart rows: gross
-    over the decided, net over net attempts (= authorized +
-    gateway_declined, the gateway_reached population), plus authorized
-    volume and avg txn (None when nothing authorized — never a fake 0).
+    """Counts, gross and net rates, authorized volume and avg txn over any
+    subset of mart rows. A rate or average with an empty denominator is
+    None.
     """
     m = {
         key: sum(r[key] for r in rows)
@@ -333,9 +258,8 @@ def _rate_table(
     label_header: str | None = None,
     with_volume: bool = False,
 ) -> dict[str, Any]:
-    """One rate table. With label_header, the first column names each
-    group (a breakdown); without, a single all-platform row. With
-    with_volume, authorized volume + avg txn columns follow the rates.
+    """One rate table. `label_header` adds a first column naming each
+    group; `with_volume` adds authorized volume and avg txn columns.
     """
     right = {"align": "right"}
     headers = _METRIC_HEADERS + (
@@ -364,8 +288,8 @@ def _rate_table(
 def _breakdown(
     rows: list[dict[str, Any]], dimension: str
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Rate-table groups for one dimension, largest first, null
-    placeholders hidden (they still count in the platform table).
+    """Rate-table groups for one dimension, largest first, placeholders
+    hidden.
     """
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -381,10 +305,9 @@ def _breakdown(
 def _month_table(
     month_rows: list[dict[str, Any]], activity_day: date
 ) -> dict[str, Any]:
-    """The headline month-to-date table: authorized count / volume / avg
-    txn by channel, largest volume first, plus a Total row. Placeholder
-    channels are hidden as rows but counted in the Total, same rule as
-    the breakdowns; the first column header names the month.
+    """Month-to-date table: authorized count / volume / avg txn by channel,
+    largest volume first, plus a Total row that also counts the hidden
+    placeholder channels.
     """
 
     def cells(label: str, count: int, amount: Decimal) -> tuple[str, ...]:
@@ -428,9 +351,8 @@ def build_message(
     platform_totals: dict[str, Any],
     month_by_channel: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Pure: mart rows (merchant × card_brand × channel), the lifetime
-    totals, and the month-to-date channel rows in, Slack payload out —
-    this is what the unit test covers, no BigQuery involved.
+    """Mart rows, lifetime totals and month-to-date channel rows in, Slack
+    payload out. Pure, so the unit tests cover it without BigQuery.
     """
     platform = _metrics(rows)
 
@@ -529,8 +451,7 @@ def build_message(
 
 def post_to_slack(webhook_url: str, payload: dict[str, Any]) -> None:
     response = requests.post(webhook_url, json=payload, timeout=30)
-    # Slack answers 200 "ok" on success; 4xx bodies name the problem
-    # (invalid_payload, channel_is_archived, …) — surface them.
+    # A 4xx body names the problem (invalid_payload, channel_is_archived).
     if response.status_code != 200:
         raise RuntimeError(
             f"Slack webhook returned {response.status_code}: {response.text}"
@@ -547,16 +468,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
-    # Explicit location, as everywhere: BigQuery defaults to the US
-    # multi-region, which the org residency policy rejects.
+    # BigQuery defaults to the US multi-region, which the org residency
+    # policy rejects.
     client = bigquery.Client(project=settings.gcp_project, location="me-central2")
     raw = f"{settings.gcp_project}.{settings.bq_dataset_raw}"
     core = f"{settings.gcp_project}.{settings.bq_dataset_core}"
     activity_day = (datetime.now(ZoneInfo(LOCAL_TIMEZONE)) - timedelta(days=1)).date()
 
-    # Freshness guard, part 1: raw covered the activity day — a failed or
-    # late ingest must yield a loud missing message, never a quiet
-    # partial one.
+    # Freshness guard, part 1: raw covers the activity day.
     cutoff = day_end_utc(activity_day)
     first_covering_load = fetch_first_covering_load(client, raw, cutoff)
     if first_covering_load is None:
@@ -566,8 +485,7 @@ def main(argv: list[str] | None = None) -> None:
             f"{activity_day} — not posting"
         )
 
-    # Part 2: the mart was rebuilt AFTER raw covered the day — an unwired
-    # or failed transform must not let yesterday's mart pass for today's.
+    # Part 2: the mart was rebuilt after raw covered the day.
     mart_modified = fetch_mart_modified(client, core)
     if mart_modified is None or mart_modified < first_covering_load:
         raise SystemExit(

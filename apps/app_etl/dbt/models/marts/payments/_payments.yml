@@ -1,7 +1,6 @@
 # Every description here lands on the BigQuery table or column
 # (persist_docs) and Metabase shows it: short, plain, under 1,024
-# characters (tests/test_dbt_docs.py). Provenance, dated rulings and
-# incident notes live in .claude/skills/metabase-data-questions/reference.md.
+# characters (tests/test_dbt_docs.py).
 version: 2
 
 models:

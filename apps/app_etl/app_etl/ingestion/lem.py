@@ -1,26 +1,15 @@
-"""lem database (Legal Entity Management) →
-{BQ_DATASET_RAW}.lem__<table> — full replace.
+"""lem database (Legal Entity Management) -> {BQ_DATASET_RAW}.lem__<table>.
 
-LEM is litecore's successor model to business_management (schema deployed
-2026-08-17, empty at pipeline creation 2026-08-18): organizations →
-legal_entities / business_units → business_accounts, with `agreements`
-(source_business_account_id → target_business_account_id, typed rules) as
-the first-class partner/aggregator linkage and the future home of
-Qlub-style attribution (`payments.acting_business_account_id` is its
-transaction-side counterpart). Until litecore starts writing to it, this
-pipeline's daily zero-row snapshots double as a go-live monitor.
+Seven small config tables, full extract every run, `replace` disposition.
+LEM is LiteCore's successor to business_management; `agreements` holds the
+partner/aggregator link between business accounts.
 
-Seven small mutable config tables, full extract every run, `replace`
-disposition (same interim stance as business_management — snapshot_date
-partitioning is the intended end state). The KYC/PII-heavy tables
-(individual_records, identity_documents, ubos, compliance_profiles,
-corporate_records, screening_checks, addresses) and the log tables
-(api_calls, requests) are deliberately not ingested — add them when a
-consumer exists.
+Skipped: the KYC tables (individual_records, identity_documents, ubos,
+compliance_profiles, corporate_records, screening_checks, addresses) and
+the log tables (api_calls, requests).
 
-No column allowlists — ingest-everything posture. Known-sensitive columns
-(trim map for dbt staging, not for extraction): legal_entities
-contact_phone_number / contact_mobile_number / contact_email.
+Sensitive columns: legal_entities contact_phone_number /
+contact_mobile_number / contact_email.
 """
 
 from __future__ import annotations
@@ -85,8 +74,7 @@ def run() -> None:
         cluster="legal_entity_id",
     )
 
-    # The partner/aggregator edge — the expected filter column is the
-    # partner-side (source) account.
+    # Clustered on the partner-side (source) account.
     agreements = bq_resource(
         sql_table(
             credentials=credentials,

@@ -1,18 +1,13 @@
-"""One Cloud Run job, every daily export report.
+"""One Cloud Run job for every daily export report.
 
-Runs each registered report in sequence with per-report isolation: a
-finance failure never blocks merchant files (and vice versa), but any
-failure still fails the job so the scheduler run shows red. Adding a
-report = one entry in REPORTS; the job command stays
-`python -m app_etl.export.daily_reports` forever, so no new Cloud Run
-job, scheduler, or image plumbing per report — that manual overhead is
-exactly what this module exists to cap.
+Runs each report in REPORTS in sequence. One report's failure never blocks
+the others, but any failure fails the job. Adding a report is one entry in
+REPORTS.
 
     python -m app_etl.export.daily_reports                    # all reports
-    python -m app_etl.export.daily_reports --report finance   # one report
     python -m app_etl.export.daily_reports --report finance --date 2026-08-10
 
---date / --dry-run are passed through to every selected report.
+--date / --dry-run pass through to every selected report.
 """
 
 from __future__ import annotations
@@ -24,14 +19,12 @@ from app_etl.export import settlement_daily_report
 
 
 def _all_merchants(argv: list[str]) -> None:
-    """settlement_daily_report in --all-merchants mode: one combined
-    platform-wide CSV (test merchants included) to the finance folder.
-    """
+    """settlement_daily_report in --all-merchants mode."""
     settlement_daily_report.main([*argv, "--all-merchants"])
 
 
-# Both entries are settlement_daily_report, once per mode: the delivered
-# per-merchant files and the finance director's combined file.
+# settlement_daily_report once per mode: per-merchant files, then the
+# combined finance file.
 REPORTS = {
     "merchant": settlement_daily_report.main,
     "finance": _all_merchants,

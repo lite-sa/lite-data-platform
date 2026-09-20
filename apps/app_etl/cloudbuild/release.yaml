@@ -1,14 +1,9 @@
 # Release: build the app-etl image and push it to Artifact Registry on merge
-# to main. Never pushes :latest — the image is tagged $SHORT_SHA so every
-# deploy is traceable to a commit and rollback is just a re-deploy of an
-# older tag.
+# to main, tagged $SHORT_SHA (never :latest), so a rollback is a re-deploy of
+# an older tag.
 #
-# Pointing the Cloud Run Jobs (ingest-* per source database, dbt transform)
-# at the new tag is a manual `gcloud run jobs update --image=...` for now —
-# the job set is still hand-provisioned (see docs/configuration.md for the
-# canonical job shape); wire the update steps in here once it stabilizes.
-# The former `sample-ingest` deploy canary this file used to update is
-# retired — the real per-database pipelines proved the wiring.
+# Pointing the Cloud Run Jobs at the new tag is a manual
+# `gcloud run jobs update --image=...` for now.
 substitutions:
   _REGION: ""
   _AR_REPO: ""

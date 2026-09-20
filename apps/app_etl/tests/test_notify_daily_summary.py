@@ -1,8 +1,5 @@
-"""Payload-shape tests for the Slack daily summary. build_message() is
-pure (mart rows + lifetime totals + month-to-date channel rows in,
-Block Kit payload out), so this runs in CI with no BigQuery
-credentials — same posture as test_dbt_parse.py. The freshness guard's
-cutoff arithmetic is pure too and tested here.
+"""Payload tests for the Slack daily summary. build_message() and the
+freshness guard's cutoff arithmetic are pure, so no BigQuery is needed.
 """
 
 from datetime import date, datetime, timezone

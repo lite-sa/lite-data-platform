@@ -1,8 +1,6 @@
-"""Shared plumbing for the daily export reports: the Riyadh calendar
-contract, the incident exclusion list, the latest-version dedup fragment,
-CLI/date handling, and the GCS upload. Report-specific logic (queries,
-column layouts, filenames) stays in the report modules — this module must
-never need touching to add a report.
+"""Shared plumbing for the daily export reports: the local calendar, the
+incident exclusion list, the latest-version dedup fragment, CLI date
+handling, and the GCS upload.
 """
 
 from __future__ import annotations
@@ -14,18 +12,13 @@ from zoneinfo import ZoneInfo
 
 from google.cloud import storage
 
-# Mirrors dbt's local_timezone var: report days are local calendar dates,
-# and "previous day" is a local-midnight question.
+# Mirrors dbt's local_timezone var: report days are local calendar dates.
 LOCAL_TIMEZONE = "Asia/Riyadh"
 
-# Payments hand-deleted or ledger-reversed upstream during incident
-# remediation (first case: inc-2026-08-24-duplicate-webhooks). Append-only
-# raw never sees a source DELETE, so without this filter the rows resurface
-# in exported files — the reversed 60 SAR capture shipped in alquwa
-# almuttalaqa's 2026-08-24 file exactly this way. Canonical list is the
-# dbt seed incident_excluded_payments.csv; a parity test keeps this copy
-# in lockstep (the exports read raw directly, and the DAG runs them in
-# parallel with dbt build, so they cannot depend on the seed table).
+# Payments deleted or reversed upstream during incident remediation.
+# Append-only raw never sees a source DELETE, so exports filter them here.
+# The dbt seed incident_excluded_payments.csv is canonical; a parity test
+# keeps this copy equal to it.
 EXCLUDED_PAYMENT_IDS = [
     "d565fbdc-e26a-458a-9cc2-b84b81e031c3",
     "92d01a69-3c74-4b80-87a8-5250f5abb7ad",
@@ -40,9 +33,8 @@ EXCLUDED_PAYMENT_IDS = [
 
 
 def latest_version(table_fqn: str) -> str:
-    """Subquery selecting the latest version per id — the dedup a stg_
-    model would own. Raw is append-only (one row per (id, updated_at)
-    version), so every reader must come through this or joins fan out.
+    """Subquery for the latest version per id. Raw holds one row per
+    version, so a join without this fans out.
     """
     return f"""(
             select * from `{table_fqn}`
@@ -53,11 +45,8 @@ def latest_version(table_fqn: str) -> str:
 
 
 def merchant_directory(raw: str) -> str:
-    """Subquery for the latest business entity per business_id — the
-    NATURAL key the payment tables reference as merchant_id, not id (the
-    source PK), so this is deliberately not latest_version(). A no-op
-    under the current replace disposition; becomes real once snapshot
-    history accumulates.
+    """Subquery for the latest business entity per `business_id`, the key
+    payment tables reference as merchant_id (not the PK `id`).
     """
     return f"""(
             select business_id, name

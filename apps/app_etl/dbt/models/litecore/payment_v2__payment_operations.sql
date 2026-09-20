@@ -1,9 +1,6 @@
 -- Litecore mirror of raw payment_v2__payment_operations:
--- the latest version of every row (raw appends one row per source-row
--- version), PII columns removed, one table for the payments team in
--- Metabase. The column list is the allowlist
--- (docs/schema-management.md §1): a new source column reaches this table
--- only by being added here after a look at the trim map.
+-- the latest version of every row, PII columns removed. The column list is
+-- an allowlist: a new source column reaches this table only when added here.
 --
 -- Left out: metadata: raw provider request and response payloads (trim map). The POS
 -- receipt scalars it carries are on the payments mart (auth_external_op,

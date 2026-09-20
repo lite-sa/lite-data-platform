@@ -22,7 +22,7 @@ sources:
           EMV 3DS authentication attempts. payment_id -> payments.id but
           nullable (an auth can exist before/without its payment) and
           retry-capable — readers dedup per payment. PII-dense: staging
-          exposes a strict allowlist (docs/schema-management.md §1).
+          exposes a strict allowlist.
       - name: business_management__business_entities
         description: >
           Merchant registry, `replace` disposition — latest state only,
@@ -39,10 +39,9 @@ sources:
           One row per hosted checkout session (checkout-session-service,
           its own database). No FK to payments in either direction: the
           verified link is (merchant_id, order_id) -> payments, order
-          grain (nb 026). status is written lazily at source. PII-dense
+          grain. status is written lazily at source. PII-dense
           (customer/metadata/order_data JSONB, payment_url, tokenised
-          redirect_urls): staging exposes a strict allowlist
-          (docs/schema-management.md §1).
+          redirect_urls): staging exposes a strict allowlist.
       - name: business_management__channels
         description: >
           Per-merchant sales channels (POS store, ecom API / hosted

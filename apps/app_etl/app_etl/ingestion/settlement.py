@@ -1,32 +1,15 @@
-"""settlement database → {BQ_DATASET_RAW}.settlement__{account,
-settlement_window,instruction,transaction} — one pipeline per source
-database (a pipeline connects to exactly one DB), all four tables
-incremental append.
+"""settlement database -> {BQ_DATASET_RAW}.settlement__{account,
+settlement_window,instruction,transaction}.
 
-Mutable sources, watermarked on `updated_at` with the safety-lag cap:
-every update re-extracts the row, so raw holds one appended row per
-source-row version and downstream dedups to the latest (see
-utils/dlt_helpers.py and the README's watermark design). `account` reads
-like a per-merchant dimension but gets the incremental shape, not a
-`replace` snapshot: `status` transitions and the `is_deleted` soft-delete
-flip are exactly what payout reporting needs history for, and `replace`
-would erase them — same call as ledger's `account`.
+All tables incremental append on `updated_at` with the safety-lag cap.
+`account` is incremental, not a `replace` snapshot: reporting needs the
+history of its `status` and `is_deleted` changes.
 
-The other two service tables, `cycle` and `account_cycle`, are
-settlement-schedule config — deliberately skipped until reporting needs
-the cycle dimension. The FK columns pointing at them
-(`settlement_window.cycle_id`, `instruction.account_cycle_id`) land with
-their tables, so the join works whenever they're added.
-`databasechangelog*` is Liquibase's own bookkeeping, never ingested.
+Joins: `transaction.parent_payment_id` -> payments.id;
+`transaction.external_reference_id` -> payment_operations.id.
+`transaction.fees` is jsonb[] and lands as a STRING holding a JSON array.
 
-No column allowlists — ingest-everything posture 
-
-Join contract for `transaction`, verified on dev data: `parent_payment_id` ->
-payments.id, `external_reference_id` -> payment_operations.id (the
-CAPTURE/AUTHORIZE that produced the leg) — NOT payments.id as first
-presumed. `fees` is jsonb[], the first array-of-jsonb through the
-loader; it lands in BQ as a STRING holding a JSON array (mdr/vat legs),
-so staging parses it; settled_amount ≈ amount − Σfees on dev data.
+Skipped: `cycle`, `account_cycle` (schedule config), `databasechangelog*`.
 """
 
 from __future__ import annotations
@@ -95,8 +78,7 @@ def run() -> None:
             write_disposition="append",
         ),
         partition="updated_at",
-        # parent-FK convention, like payment_operations -> payment_id;
-        # merchant_id lives one join away on settlement_window
+        # Cluster on the parent FK; merchant_id is on settlement_window.
         cluster="settlement_window_id",
     )
 

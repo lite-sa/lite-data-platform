@@ -1,12 +1,8 @@
--- Latest version per merchant. business_id — not id, the source PK — is
--- the external identifier payments.merchant_id points at (join contract
--- verified in nb 018); rows without one are internal-only and dropped.
+-- Latest version per merchant. payments.merchant_id references business_id,
+-- not the PK id; rows without one are internal and dropped.
 --
--- Deliberate two-column allowlist: business_entities is the merchant's
--- registration profile and none of it belongs in core beyond the display
--- name — add columns consciously. Raw is `replace` disposition today (no
--- version history), so the dedup is defensive; it also stays correct if
--- ingestion moves to the planned snapshot_date design.
+-- Two-column allowlist: only the display name belongs in core. Raw is
+-- `replace` today, so the dedup is defensive.
 select business_id as merchant_id, name as merchant_name
 
 from {{ source('litecore', 'business_management__business_entities') }}

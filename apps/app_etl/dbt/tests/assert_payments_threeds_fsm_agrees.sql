@@ -1,8 +1,5 @@
--- The 3DS FSM and the protocol verdict must agree on authentication
--- success: status AUTHENTICATED <=> transStatus Y/A (nb 019's guarded
--- overlap). A row here means the source contract drifted — revisit the
--- threeds derivation in the payments mart before trusting
--- threeds_authenticated.
+-- The 3DS FSM and the protocol verdict must agree: status AUTHENTICATED
+-- <=> transStatus Y/A.
 
 select
     payment_id,

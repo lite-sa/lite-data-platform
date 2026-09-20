@@ -1,10 +1,9 @@
 """Descriptions in the persisted dbt folders must fit BigQuery.
 
-persist_docs copies every model and column description onto the BigQuery
-relation, and BigQuery rejects a column description longer than 1,024
-characters, which fails the whole build. Tables allow more, but Metabase
-shows the table description as one paragraph, so the same cap applies.
-Static check over the YAML, no warehouse needed (CI has no credentials).
+persist_docs copies each description onto the BigQuery relation, and
+BigQuery fails the build on a column description over 1,024 characters.
+The same cap applies to table descriptions, which Metabase shows as one
+paragraph. Static check over the YAML, no warehouse needed.
 """
 
 from pathlib import Path

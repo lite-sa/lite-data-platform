@@ -1,18 +1,10 @@
-"""business_management database →
-{BQ_DATASET_RAW}.business_management__{business_entities,channels} — full
-replace.
+"""business_management database ->
+{BQ_DATASET_RAW}.business_management__{business_entities,channels}.
 
-One pipeline per source database; both tables are small mutable config
-tables and get the snapshot shape: full extract every run, `replace`
-disposition. (The snapshot_date-partitioned design in the README is the
-intended end state; `replace` is the interim until that strategy lands.)
-`channels` is the per-business channel/location config (type/sub_type,
-status, terminal counts, receipt footers, addresses, lat/long), FK
-`business_id` -> business_entities.id.
+Two small config tables, full extract every run, `replace` disposition.
+`channels.business_id` -> business_entities.id.
 
-No column allowlist — ingest-everything posture. Known-sensitive columns
-(trim on request, per docs/schema-management.md §1): channels.created_by /
-channels.updated_by look like operator identifiers (varchar 255).
+Sensitive columns: channels.created_by / updated_by (operator identifiers).
 """
 
 from __future__ import annotations
@@ -39,12 +31,8 @@ def run() -> None:
             table_name=f"{DATABASE}__business_entities",
             write_disposition="replace",
         ),
-        # `business_id` (not `id`, the source PK) is the natural join key:
-        # it's the only other uniquely-indexed column and reads as this
-        # row's external identifier, whereas `id` is only targeted by this
-        # DB's own child tables (channels, channel_sequence) — confirm
-        # against how `merchants`/`payments.merchant_id` key before relying
-        # on it in a downstream join.
+        # `business_id`, not the PK `id`, is what payments.merchant_id
+        # references.
         cluster="business_id",
     )
 
@@ -58,9 +46,7 @@ def run() -> None:
             table_name=f"{DATABASE}__channels",
             write_disposition="replace",
         ),
-        # parent-FK convention: business_id -> business_entities.id, the
-        # column every downstream join filters on (and the source's own
-        # secondary indexes all lead with it).
+        # Cluster on the parent FK (-> business_entities.id).
         cluster="business_id",
     )
 

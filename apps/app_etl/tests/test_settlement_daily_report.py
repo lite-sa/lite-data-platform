@@ -1,15 +1,10 @@
-"""Unit tests for the settlement daily report export (v2) — pure transforms
-only, no BigQuery/GCS involved (CI never gets credentials; same stance as
-the merchant-report and notify-job tests).
+"""Unit tests for the settlement daily report export: pure transforms only,
+no BigQuery or GCS.
 
-Coverage: one poisoned fixture per gate check in run_checks, both gate
-waivers (they fire only for their own id, and never in silence), the
-NULL-parent_payment_id fallback through the operation, the claw-back
-row shape (CTR-921 reversal_adjustment: fee derivation, its own
-contract, its exemptions, its note, its delivered row), the
-informational notes, the refund row's original-payment semantics in
+Covers each gate check in run_checks, both waivers, the NULL
+parent_payment_id fallback, the claw-back row, the informational notes,
 build_report, the leftover payment-grain path, the file writers, and the
-seed-lockstep guard for the incident exclusion list.
+parity guard for the incident exclusion list.
 """
 
 from __future__ import annotations

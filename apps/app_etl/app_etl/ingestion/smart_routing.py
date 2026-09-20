@@ -1,17 +1,9 @@
-"""smart_routing database → {BQ_DATASET_RAW}.smart_routing__{profile,
-routing_rule,transaction_evaluation} — one pipeline per source database
-(a pipeline connects to exactly one DB).
+"""smart_routing database -> {BQ_DATASET_RAW}.smart_routing__{profile,
+routing_rule,transaction_evaluation}.
 
-`profile` and `routing_rule` are small mutable routing-config tables: full
-extract every run, `replace` disposition — same interim pattern as
-`merchants`/`business_entities` (snapshot_date partitioning is the target
-design, not yet implemented). `transaction_evaluation` is the per-
-transaction routing-decision log: mutable, timestamped, watermarked on
-`updated_at` with the safety-lag cap, append disposition — same shape as
-`payments`/`payment_operations` (see utils/dlt_helpers.py and the README's
-watermark design).
-
-No column allowlists — ingest-everything posture
+`profile` and `routing_rule` are small config tables: full extract every
+run, `replace` disposition. `transaction_evaluation` is the routing-decision
+log: incremental append on `updated_at` with the safety-lag cap.
 """
 
 from __future__ import annotations

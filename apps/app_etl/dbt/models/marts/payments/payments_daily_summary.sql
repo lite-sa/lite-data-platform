@@ -11,39 +11,21 @@
 }}
 
 -- Daily payment funnel: one row per payment_creation_date × merchant ×
--- channel × entry_mode × gateway × card_brand × currency ×
--- payment_method. Reads the payments fact — never staging/ops — and
--- FULLY RESTATES with it every run (late mutations restate history,
--- reruns are idempotent, --full-refresh is a no-op by construction;
--- graduates together with payments if that goes incremental).
--- payment_creation_date is the payment's own local calendar date, not a
--- run date.
+-- channel × entry_mode × gateway × card_brand × currency × payment_method.
+-- Reads the payments fact only and is fully restated with it every run.
+-- payment_creation_date is the payment's local calendar date.
 --
--- Dimensions extended 2026-08-24 with the nb 023 fact port: entry_mode
--- (the slice the auth-rate story splits on — pos vs wallet vs card vs
--- link are different conversations) and card_brand (the product ask;
--- 'unknown' before the instrument_data backfill horizon ~2026-08-17, so
--- brand splits only mean something from then on). gateway changed
--- meaning in the same pass: it is now the fact's decision connector —
--- the gateway that said the final yes or no — not the first-routed
--- connector; 'not_routed' marks payments where no connector ever
--- answered.
+-- gateway is the decision connector (the one that gave the final answer);
+-- 'not_routed' means no connector answered. card_brand is 'unknown' before
+-- ~2026-08-17.
 --
--- Funnel counts come from the fact's outcome column, so authorized /
--- declined / no_decision PARTITION request_count by construction
--- (singular test), and sum(request_count) reconciles exactly to the
--- fact table's row count (second singular test) — the aggregate may
--- never lose payments. gateway_declined_count enables the net auth
--- rate downstream: net = authorized / (authorized + gateway_declined),
--- gross = authorized / (authorized + declined); the reached/not-reached
--- split is the fact's gateway_reached flag. currency is a dimension, so
--- every amount here sums a single currency.
+-- authorized / declined / no_decision partition request_count, and
+-- sum(request_count) equals the fact's row count (singular tests).
+-- gross = authorized / (authorized + declined);
+-- net = authorized / (authorized + gateway_declined).
 --
--- Amounts are major units (NUMERIC — exact), reusing the fact's
--- amount/captured_amount/refunded_amount/reversed_amount so the
--- minor→major rule lives in one place. captured/refunded/reversed are
--- booked-funds totals (INSTANT AUTHORIZE fold), attributed to the
--- payment's creation date — not the capture/refund day.
+-- Amounts are major units from the fact. captured / refunded / reversed are
+-- attributed to the payment's creation date, not the capture or refund day.
 
 select
     date(created_at_local) as payment_creation_date,

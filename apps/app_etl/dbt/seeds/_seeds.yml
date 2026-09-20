@@ -42,11 +42,11 @@ seeds:
   - name: decline_code_map
     description: >
       connector_response_code → human decline_reason, the highest-volume
-      codes only (nb 023's map). TSP/NearPay 3-digit codes are read as
+      codes only. TSP/NearPay 3-digit codes are read as
       ISO 8583:1993 action codes — an assumption to confirm against
       NearPay docs before any merchant-facing copy uses the labels.
-      Deliberately unmapped: TSP `196` (21% of TSP declines, nb 015's
-      open NearPay question) and `204` — unmapped codes keep a NULL
+      Deliberately unmapped: TSP `196` (21% of TSP declines, an open
+      NearPay question) and `204` — unmapped codes keep a NULL
       decline_reason in the fact, they are not errors. One namespace for
       all connectors: TSP codes are numeric strings, mpgs codes are
       gatewayCode literals, so they cannot collide.

@@ -1,58 +1,28 @@
-# Daily pipeline DAG: extraction (sequential, one Cloud Run Job per source
-# database, in the order listed) -> transform + export (parallel: dbt
-# build writing core, the daily report exports — the per-merchant
-# settlement files + the all-merchants finance file, one job via
-# app_etl.export.daily_reports — reading raw). One Cloud Scheduler trigger
-# executes this workflow daily instead of staggered per-job schedules
-# guessing each other's runtimes.
+# Daily pipeline: extraction (one Cloud Run Job per source database, one
+# after another) -> dbt build and the daily report exports in parallel. One
+# Cloud Scheduler trigger executes this workflow daily.
 #
-# The Slack daily summary (notify-daily-summary) is deliberately NOT in
-# this DAG (2026-08-24): it fires from its own Cloud Scheduler trigger
-# later in the morning, so a failed export can never keep the metrics
-# from posting. The decoupling is safe because the job self-guards: it
-# refuses to post unless raw covered the activity day AND the
-# payments_daily_summary mart was rebuilt at/after that covering load —
-# that is, unless this workflow's transform stage already ran. Schedule
-# it with a generous buffer after this workflow's trigger: a too-early
-# fire fails loudly and nothing retries it later that day.
+# Extraction is sequential because every pipeline writes the shared
+# `_dlt_pipeline_state` / `_dlt_loads` tables, and BigQuery allows 5 writes
+# per 10 s per table. Before fanning the extracts out again, cap concurrent
+# state writers at four.
 #
-# Sequential extraction since 2026-09-16. Every pipeline loads the same
-# dataset, so dlt's system tables (`_dlt_pipeline_state`, `_dlt_loads`)
-# are shared by all of them, and BigQuery allows 5 write operations per
-# 10 seconds per table (a fixed limit, not a raisable quota). With eight
-# jobs started together and each finishing in ~30 s, seven state loads
-# landed within two seconds of each other: `rateLimitExceeded` on
-# `_dlt_pipeline_state` every day from 2026-09-08 (pricing_engine, the
-# sixth state writer) until dlt's five immediate retries (~2 s apart, no
-# backoff) ran out on 2026-09-16 and ingest-payment-v2 failed. One job
-# after another removes the contention: about five minutes instead of
-# one, irrelevant at daily cadence, and the source replica no longer
-# takes eight concurrent extracts. Do not fan the extracts out again
-# without capping concurrent state writers at four per wave — the
-# parallel period (2026-08-18 → 2026-09-16) only worked while there were
-# five writers or fewer (business_management, all snapshots, writes no
-# state). The 2026-08-17 collision on the shared GCS staging prefix was a
-# different mechanism, fixed for good by the per-pipeline prefix in
-# utils/dlt_helpers.py::bq_pipeline.
+# The Slack daily summary is not in this DAG: it runs on its own scheduler
+# trigger and refuses to post unless this workflow's transform stage
+# already ran for the day.
 #
-# Deploy (user-run, tracked in docs/lite-data-prod-provisioning.md Phase 5):
+# A failed job fails the execution, so dbt never builds on a partial
+# extract. No retry policy: fix the cause, then rerun the whole workflow.
+# Reruns are safe (watermarked or full-extract pipelines, full-restate dbt,
+# overwriting exports).
+#
+# Deploy:
 #   gcloud workflows deploy litecore-daily \
 #     --source=apps/app_etl/workflows/daily_pipeline.yaml \
 #     --location=me-central2 \
 #     --service-account=<SA with run.invoker on the jobs below + run.viewer>
-#
-# A failed job fails its connector call, which fails the execution. In
-# the extract stage that stops the remaining extracts too, so the
-# transform stage never runs on a partial extract; the fix-and-rerun is
-# the whole workflow, not the one job. In the transform_and_export stage
-# the sibling branch is cancelled, but a Cloud Run execution already
-# started by a cancelled branch runs to completion on its own (so an
-# export failure does not abort a running dbt build, and the later
-# metrics post still finds a fresh mart). Reruns are safe either way:
-# every pipeline is watermarked (incremental) or full-extract (snapshot),
-# dbt fully restates what it builds, and the export overwrites its files.
-# No retry policy in v1: a rerun is a manual `gcloud workflows run
-# litecore-daily --location=me-central2` after fixing the cause.
+# Rerun:
+#   gcloud workflows run litecore-daily --location=me-central2
 
 main:
   steps:
@@ -91,15 +61,9 @@ main:
         call: run_job
         args:
           job: ingest-payout
-    # Both branches run only after every extract succeeded — dbt never
-    # builds on a partial extract — and are independent of each other
-    # (dbt reads raw and writes core; the exports read raw and write the
-    # egress bucket), so they fan out. Both are FATAL: a broken build or
-    # a report deliverable that didn't ship must fail the execution,
-    # which is today's only alert signal. The export-merchant-daily job
-    # runs app_etl.export.daily_reports — the settlement report in
-    # per-merchant and all-merchants modes, isolated per mode inside the
-    # job.
+    # Both branches run after every extract succeeded and are independent:
+    # dbt reads raw and writes core, the exports read raw and write the
+    # egress bucket. A failure in either fails the execution.
     - transform_and_export:
         parallel:
           branches:
@@ -128,8 +92,7 @@ run_job:
           name: ${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/locations/me-central2/jobs/" + job}
           connector_params:
             # Total wait for the execution; must exceed the slowest job's
-            # runtime (the connector default of 1800s would mark a healthy
-            # but slow ingest as failed).
+            # runtime (the connector default is 1800s).
             timeout: 3600
         result: execution
     - finished:

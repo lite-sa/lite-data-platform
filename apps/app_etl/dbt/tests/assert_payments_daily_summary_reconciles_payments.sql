@@ -1,7 +1,5 @@
--- The aggregate may never lose or invent payments: summed request_count
--- must equal the fact table's row count exactly (nb 018's reconciliation
--- assert). A mismatch means a dimension filtered rows (e.g. a join gone
--- inner) or the summary drifted off payment grain.
+-- Summed request_count must equal the fact table's row count: the summary
+-- never loses or invents payments.
 with
 
     summary as (

@@ -1,11 +1,9 @@
--- Latest version per smart-routing evaluation, standard stg_ dedup
--- contract. Grain: routing_evaluation_id — one COMPLETED row per authorize
--- in the happy path plus a retry tail; readers pick the first per payment.
+-- Latest version per smart-routing evaluation. Grain:
+-- routing_evaluation_id. Retries append rows; readers pick the first per
+-- payment.
 --
--- Two prod facts baked in (nb 022 findings, re-verified in nb 023):
--- operation_type is stored lowercase ('authorize'), and the persisted
--- routing_obj keys are snake_case (primary.connector_type) — the DTO's
--- camelCase never reaches the database.
+-- operation_type is stored lowercase ('authorize') and routing_obj keys are
+-- snake_case (primary.connector_type).
 with
     latest as (
 
