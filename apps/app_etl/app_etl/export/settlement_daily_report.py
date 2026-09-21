@@ -37,6 +37,7 @@ from app_etl.export.common import (
     latest_version,
     make_arg_parser,
     merchant_directory,
+    require_fresh_extraction,
     resolve_days,
     upload_files,
 )
@@ -1018,6 +1019,7 @@ def main(argv: list[str] | None = None) -> None:
     # policy rejects.
     client = bigquery.Client(project=settings.gcp_project, location="me-central2")
     raw = f"{settings.gcp_project}.{settings.bq_dataset_raw}"
+    require_fresh_extraction(client, raw, report_day)
 
     spine = fetch_window_transactions(
         client, raw, report_day, all_merchants=args.all_merchants

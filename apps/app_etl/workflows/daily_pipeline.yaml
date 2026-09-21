@@ -1,20 +1,19 @@
 # Daily pipeline: extraction (one Cloud Run Job per source database, one
-# after another) -> dbt build and the daily report exports in parallel. One
-# Cloud Scheduler trigger executes this workflow daily.
+# after another) -> dbt build. Two Cloud Scheduler triggers execute this
+# workflow, at 06:45 and 15:00 Asia/Riyadh.
 #
 # Extraction is sequential because every pipeline writes the shared
 # `_dlt_pipeline_state` / `_dlt_loads` tables, and BigQuery allows 5 writes
 # per 10 s per table. Before fanning the extracts out again, cap concurrent
 # state writers at four.
 #
-# The Slack daily summary is not in this DAG: it runs on its own scheduler
-# trigger and refuses to post unless this workflow's transform stage
-# already ran for the day.
+# The Slack daily summary and the daily report exports are not in this
+# DAG: each runs once a day on its own scheduler trigger, after the morning
+# run, and refuses to run until raw covers the day it reports.
 #
 # A failed job fails the execution, so dbt never builds on a partial
 # extract. No retry policy: fix the cause, then rerun the whole workflow.
-# Reruns are safe (watermarked or full-extract pipelines, full-restate dbt,
-# overwriting exports).
+# Reruns are safe (watermarked or full-extract pipelines, full-restate dbt).
 #
 # Deploy:
 #   gcloud workflows deploy litecore-daily \
@@ -65,24 +64,11 @@ main:
         call: run_job
         args:
           job: ingest-risk-management
-    # Both branches run after every extract succeeded and are independent:
-    # dbt reads raw and writes core, the exports read raw and write the
-    # egress bucket. A failure in either fails the execution.
-    - transform_and_export:
-        parallel:
-          branches:
-            - transform:
-                steps:
-                  - run_transform:
-                      call: run_job
-                      args:
-                        job: transform-dbt
-            - export:
-                steps:
-                  - run_export:
-                      call: run_job
-                      args:
-                        job: export-merchant-daily
+    # Runs only after every extract succeeded.
+    - transform:
+        call: run_job
+        args:
+          job: transform-dbt
 
 # Run one Cloud Run Job and block until its execution finishes; a failed
 # execution raises and fails the workflow. Region is pinned to me-central2

@@ -1,16 +1,17 @@
 """Shared plumbing for the daily export reports: the local calendar, the
 incident exclusion list, the latest-version dedup fragment, CLI date
-handling, and the GCS upload.
+handling, the raw freshness guard, and the GCS upload.
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from google.cloud import storage
+from google.api_core.exceptions import NotFound
+from google.cloud import bigquery, storage
 
 # Mirrors dbt's local_timezone var: report days are local calendar dates.
 LOCAL_TIMEZONE = "Asia/Riyadh"
@@ -78,6 +79,52 @@ def resolve_days(args: argparse.Namespace) -> tuple[date, date]:
     """(report_day, run_date), both Riyadh calendar."""
     run_date = datetime.now(ZoneInfo(LOCAL_TIMEZONE)).date()
     return args.date or run_date - timedelta(days=1), run_date
+
+
+# The raw databases the reports read. The export job runs on its own
+# schedule, outside the ingest workflow, so it checks their loads itself.
+REQUIRED_EXTRACTIONS = ("payment_v2", "settlement")
+
+
+def require_fresh_extraction(
+    client: bigquery.Client, raw: str, report_day: date
+) -> None:
+    """Exit unless every REQUIRED_EXTRACTIONS database has a successful
+    load in `_dlt_loads` (status 0) at/after the local close of `report_day`.
+    """
+    local_end = datetime.combine(
+        report_day + timedelta(days=1), time.min, tzinfo=ZoneInfo(LOCAL_TIMEZONE)
+    )
+    cutoff = local_end.astimezone(timezone.utc)
+    query = f"""
+        select distinct schema_name
+        from `{raw}._dlt_loads`
+        where status = 0
+          and schema_name in unnest(@schemas)
+          and inserted_at >= @cutoff
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter(
+                "schemas", "STRING", list(REQUIRED_EXTRACTIONS)
+            ),
+            bigquery.ScalarQueryParameter("cutoff", "TIMESTAMP", cutoff),
+        ]
+    )
+    try:
+        covered = {
+            row["schema_name"]
+            for row in client.query_and_wait(query, job_config=job_config)
+        }
+    except NotFound:
+        covered = set()
+    missing = sorted(set(REQUIRED_EXTRACTIONS) - covered)
+    if missing:
+        raise SystemExit(
+            f"stale raw data: no successful {', '.join(missing)} load at/after "
+            f"{cutoff:%Y-%m-%d %H:%M} UTC, so raw does not cover {report_day}, "
+            f"not exporting"
+        )
 
 
 def upload_files(

@@ -1,6 +1,7 @@
 # Docs and tests for the litecore mirror: the payment_v2, ledger,
-# settlement, checkout_session and payout raw tables, PII columns removed, built
-# into the core dataset next to the marts. Every description here lands on
+# settlement, checkout_session, payout, business_management, pricing_engine
+# and smart_routing raw tables, PII columns removed, built into the core
+# dataset next to the marts. Every description here lands on
 # the BigQuery table or column (persist_docs) and Metabase shows it, so:
 # short, plain, under 1,024 characters (tests/test_dbt_docs.py). Each table
 # description names the redacted columns; the reasons are the "Left out"
@@ -464,10 +465,9 @@ models:
 
   - name: settlement__account
     description: >
-      Redacted copy of LiteCore settlement.account, the latest version of
-      every settlement account, one row per id. Removed columns:
-      created_by and updated_by. A merchant's payout destination, INTERNAL
-      (wallet) or EXTERNAL (bank).
+      Copy of LiteCore settlement.account, the latest version of every
+      settlement account, one row per id. No column removed. A merchant's
+      payout destination, INTERNAL (wallet) or EXTERNAL (bank).
       settlement__instruction.destination_account_id references it.
       Rebuilt every morning.
     columns:
@@ -486,6 +486,12 @@ models:
         description: ISO 4217 code. SAR only today.
       - name: is_deleted
         description: Soft-delete flag.
+      - name: created_by
+        description: >
+          The service or tool that created the account: ledger-service,
+          payout-service or Retool-App.
+      - name: updated_by
+        description: The service or tool behind the last update. NULL on every row so far.
       - name: created_at
         description: Account creation, UTC.
       - name: updated_at
@@ -493,10 +499,10 @@ models:
 
   - name: settlement__settlement_window
     description: >
-      Redacted copy of LiteCore settlement.settlement_window, the latest
-      version of every settlement window, one row per id. Removed columns:
-      created_by and updated_by. A window is one merchant's payout batch
-      for one collection day and cycle. settlement__transaction rows are
+      Copy of LiteCore settlement.settlement_window, the latest version
+      of every settlement window, one row per id. No column removed. A
+      window is one merchant's payout batch for one collection day, cycle
+      and window schedule. settlement__transaction rows are
       its legs, settlement__instruction rows its payouts. Amounts are
       minor units. Rebuilt every morning.
     columns:
@@ -507,6 +513,12 @@ models:
         description: The merchant paid out (payments.merchant_id).
       - name: cycle_id
         description: The settlement cycle (frequency and cutoff) the window follows.
+      - name: window_schedule_id
+        description: >
+          The merchant window schedule (one per acceptance account, main
+          or tips) the window belongs to. Added at source 2026-09-17, NULL
+          on windows last updated before then. The schedule table is not
+          ingested.
       - name: value_date
         description: >
           When the payout becomes executable, UTC. Collection day plus
@@ -531,6 +543,14 @@ models:
         description: ISO 4217 code. SAR only today.
       - name: reviewed_at
         description: When back office accepted or rejected the window, UTC.
+      - name: created_by
+        description: >
+          The service or tool that opened the window: system,
+          system-migration or ops_team.
+      - name: updated_by
+        description: >
+          The service or tool behind the last update: system, Retool-App
+          (a back-office action), system-migration or ops_team.
       - name: created_at
         description: Window opened, UTC.
       - name: updated_at
@@ -848,5 +868,339 @@ models:
         description: The checkout session id, the top-up id, or the expiry job reference, per event_type.
       - name: created_at
         description: When the event happened, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: business_management__business_entities
+    description: >
+      Redacted copy of LiteCore business_management.business_entities, the
+      merchant registry, one row per id. Removed columns: the contact,
+      agent and sales phone numbers and emails, deleted_by, the nafath
+      identity-verification fields, high_risk_device_id, invited_by, the
+      risk and compliance scores and flags, and never-reviewed registry
+      blobs (partners_nationality_name, contribution_capital,
+      stock_capital, fiscal_year, business_sequence, ticket_id, focal_*).
+      Join to payments on business_id, not id. Registry fields come from
+      Wathq (the commercial registration service) and are NULL until the
+      merchant submits a CR. The source table is overwritten every run, so
+      no history. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The business entity id (uuid). channels.business_id references it.
+        tests: [not_null, unique]
+      - name: business_id
+        description: The merchant id every other table uses (payments.merchant_id).
+        tests: [not_null, unique]
+      - name: name
+        description: The merchant's display name. core.payments.merchant_name.
+      - name: wathq_legal_name
+        description: The legal name in the commercial registry.
+      - name: status
+        description: >
+          Onboarding state. KYB approved means live; Not Started and the
+          Pending and KYB - values are onboarding steps.
+      - name: type
+        description: Company or Establishment, from the registry.
+      - name: type_form
+        description: Legal form from the registry, for example Limited liability company.
+      - name: entity_type_id
+        description: 1 for Company, 2 for Establishment. NULL on older rows.
+      - name: product_type
+        description: AGGREGATOR on every row so far.
+      - name: product_opt_ins
+        description: JSON array of the products the merchant chose, for example Online Payments.
+      - name: mccs
+        description: JSON array of the merchant category codes, each with code and title.
+      - name: cr_number
+        description: Commercial registration number (10 digits).
+      - name: cr_national_number
+        description: The registry's unified national number of the business.
+      - name: is_main
+        description: TRUE for a main registration, FALSE for a branch.
+      - name: main_cr_number
+        description: The main registration's CR number, set on branches.
+      - name: main_cr_national_number
+        description: The main registration's national number, set on branches.
+      - name: cr_capital
+        description: Registered capital, major units of capital_currency_name.
+      - name: capital_currency_id
+        description: The registry's currency code for the capital. 1 is Saudi Riyal.
+      - name: capital_currency_name
+        description: Currency of the registered capital.
+      - name: company_duration
+        description: Company duration in years, from the registry.
+      - name: issue_date_gregorian
+        description: CR issue date, Gregorian, text YYYY-MM-DD.
+      - name: issue_date_hijri
+        description: CR issue date, Hijri, text DD-MM-YYYY.
+      - name: headquarter_city_name
+        description: Headquarter city from the registry.
+      - name: management_structure_name
+        description: Management structure from the registry, for example Manger.
+      - name: entity_characters
+        description: JSON array of registry characteristics, for example One person.
+      - name: has_ecommerce
+        description: The registry lists an ecommerce activity.
+      - name: website_url
+        description: The merchant's website.
+      - name: in_liquidation_process
+        description: The registry marks the business as in liquidation.
+      - name: is_license_based
+        description: The business runs on a license, not a CR.
+      - name: license_issuer_national_number
+        description: National number of the license issuer.
+      - name: license_issuer_name
+        description: Name of the license issuer.
+      - name: wathq_data_retrieved
+        description: TRUE once the registry data was fetched.
+      - name: wathq_status
+        description: Registry status of the CR. Active on every fetched row so far.
+      - name: wathq_status_confirmation_date_gregorian
+        description: Registry status confirmation date, Gregorian text.
+      - name: wathq_status_confirmation_date_hijri
+        description: Registry status confirmation date, Hijri text.
+      - name: wathq_status_reactivation_date_gregorian
+        description: Registry reactivation date, Gregorian text.
+      - name: wathq_status_reactivation_date_hijri
+        description: Registry reactivation date, Hijri text.
+      - name: wathq_status_suspension_date_gregorian
+        description: Registry suspension date, Gregorian text.
+      - name: wathq_status_suspension_date_hijri
+        description: Registry suspension date, Hijri text.
+      - name: wathq_status_deletion_date_gregorian
+        description: Registry deletion date, Gregorian text.
+      - name: wathq_status_deletion_date_hijri
+        description: Registry deletion date, Hijri text.
+      - name: annual_revenue_from
+        description: Lower bound of the declared annual revenue band, SAR.
+      - name: annual_revenue_to
+        description: Upper bound of the declared annual revenue band, SAR.
+      - name: number_of_employees_from
+        description: Lower bound of the declared headcount band.
+      - name: number_of_employees_to
+        description: Upper bound of the declared headcount band.
+      - name: is_pci_compliant
+        description: The merchant declared PCI compliance.
+      - name: is_manually_created
+        description: Back office created the entity, not self-onboarding.
+      - name: kyb_approved_at
+        description: KYB approval time, UTC.
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: deleted_at
+        description: Soft-delete time, UTC.
+      - name: created_at
+        description: Entity creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: business_management__channels
+    description: >
+      Redacted copy of LiteCore business_management.channels, a merchant's
+      sales channels (a POS store, or an ecom API, hosted checkout or
+      payment link channel), one row per id. Removed columns: created_by
+      and updated_by (some hold staff emails). Addresses, coordinates and
+      receipt footers are the store's, typed by the merchant, set on 78
+      of 182 channels.
+      payments.channel_id and checkout sessions' channel_id reference id.
+      business_id is business_entities.id, not the merchant id. The
+      source table is overwritten every run, so no history. Rebuilt every
+      morning.
+    columns:
+      - name: id
+        description: The channel id (uuid). payments.channel_id.
+        tests: [not_null, unique]
+      - name: business_id
+        description: >
+          The owning entity, business_management__business_entities.id.
+          Join there to reach the merchant id (business_id).
+      - name: name
+        description: The channel's display name, for example a store name.
+      - name: type
+        description: IN-PERSON or ECOM.
+      - name: sub_type
+        description: API, CHECKOUT or PAYMENT_LINK on ECOM channels. NULL on IN-PERSON.
+      - name: is_default
+        description: The merchant's default channel of its type.
+      - name: status
+        description: ACTIVE or INACTIVE.
+      - name: terminal_count
+        description: Terminals assigned to the channel.
+      - name: terminal_total
+        description: Terminal allowance of the channel.
+      - name: sequence
+        description: The channel's running number at source.
+      - name: arabic_address1
+        description: Store address line 1 in Arabic, usually the city. Merchant-typed.
+      - name: arabic_address2
+        description: Store address line 2 in Arabic, usually the district. Merchant-typed.
+      - name: english_address1
+        description: Store address line 1 in English, usually the city. Merchant-typed, some rows hold Arabic.
+      - name: english_address2
+        description: Store address line 2 in English, usually the district. Merchant-typed.
+      - name: latitude
+        description: Store latitude, decimal degrees.
+      - name: longitude
+        description: Store longitude, decimal degrees.
+      - name: arabic_receipt_footer1
+        description: First Arabic line printed at the bottom of the receipt.
+      - name: arabic_receipt_footer2
+        description: Second Arabic line printed at the bottom of the receipt.
+      - name: english_receipt_footer1
+        description: First English line printed at the bottom of the receipt, for example Thank you for visiting.
+      - name: english_receipt_footer2
+        description: Second English line printed at the bottom of the receipt.
+      - name: created_at
+        description: Channel creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: pricing_engine__rule_evaluation
+    description: >
+      Copy of LiteCore pricing_engine.rule_evaluation, the latest version
+      of every pricing request, one row per id. No column removed. One row
+      per fee calculation, mostly captures. A reference can be priced more
+      than once, take the latest per origin_reference. matched_rules,
+      winning_rule and applied_price are JSON strings holding the
+      merchant's fee terms, read them with JSON_VALUE. Amounts are minor
+      units. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The evaluation id (uuid).
+        tests: [not_null, unique]
+      - name: origin
+        description: The calling service, payment-v2-service or payout-service.
+      - name: origin_reference
+        description: >
+          The priced object. For payment-v2-service the payment operation
+          id (payment_v2__payment_operations.id). payout-service
+          references match no table.
+      - name: parent_origin_reference
+        description: For payment-v2-service the payment id (payment_v2__payments.id). NULL on one row.
+      - name: merchant_id
+        description: The merchant priced (payments.merchant_id).
+      - name: operation
+        description: capture, refund, payout, transfer, authorize or pay.
+      - name: original_amount
+        description: The amount priced, minor units.
+      - name: matched_rules
+        description: JSON array of every pricing rule that matched.
+      - name: winning_rule
+        description: JSON of the applied rule, name, priority and its fee list (percentage and flat).
+      - name: winning_rule_id
+        description: The applied rule's id. NULL means no rule matched and no fee was charged.
+      - name: applied_price
+        description: >
+          JSON of the result, fees (mdr, flat, vat amounts in minor units)
+          and total_amount.
+      - name: created_at
+        description: Request received, UTC.
+      - name: updated_at
+        description: Result written, UTC.
+
+  - name: smart_routing__profile
+    description: >
+      Redacted copy of LiteCore smart_routing.profile, a merchant's
+      routing profiles, one row per id. Removed column: description (free
+      text). A profile groups routing rules, smart_routing__routing_rule
+      rows reference it. The source table is overwritten every run, so no
+      history. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The profile id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The merchant (payments.merchant_id).
+      - name: name
+        description: The profile's name, typed by the operator.
+      - name: status
+        description: ACTIVE, INACTIVE or DRAFT.
+      - name: is_default
+        description: The merchant's default profile.
+      - name: is_deleted
+        description: Soft-delete flag. Rules of a deleted profile can still be live.
+      - name: fallback_provider_config_id
+        description: Gateway configuration used when no rule matches. NULL on every row so far.
+      - name: fallback_connector_type
+        description: Gateway connector used when no rule matches. NULL on every row so far.
+      - name: created_at
+        description: Profile creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: smart_routing__routing_rule
+    description: >
+      Copy of LiteCore smart_routing.routing_rule, the routing rules, one
+      row per id. No column removed. rule_definition is a JSON string:
+      conditions on payment facts (amount, processingType, currency) and
+      the gateway to route to. Amounts in conditions are minor units. The
+      rule with the higher priority wins. The source table is overwritten
+      every run, so no history. Rebuilt every morning.
+    columns:
+      - name: id
+        description: The rule id (uuid). ruleId inside transaction_evaluation.matched_rules.
+        tests: [not_null, unique]
+      - name: profile_id
+        description: The owning profile (smart_routing__profile.id).
+      - name: name
+        description: The rule's name, typed by the operator.
+      - name: type
+        description: NORMAL_BASED on every row so far.
+      - name: scope
+        description: payment on every row so far.
+      - name: priority
+        description: Rank among the profile's rules, the higher number wins.
+      - name: rule_definition
+        description: >
+          JSON of the rule. conditions holds the fact, operator and value
+          tests; event.params holds the target connector type and provider
+          configuration id (key casing varies between rows).
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: created_at
+        description: Rule creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: smart_routing__transaction_evaluation
+    description: >
+      Redacted copy of LiteCore smart_routing.transaction_evaluation, the
+      routing decision log, the latest version of every evaluation, one
+      row per id. Removed columns: transaction_initiated_message (the raw
+      inbound payment event) and published_event. Ecom only, POS payments
+      never route. Join to payments on payment_id, transaction_id matches
+      no table. routing_obj and matched_rules are JSON strings. Rebuilt
+      every morning.
+    columns:
+      - name: id
+        description: The evaluation id (uuid).
+        tests: [not_null, unique]
+      - name: main_transaction_evaluation_id
+        description: The first evaluation of a retried routing. NULL on every row so far.
+      - name: transaction_id
+        description: The router's own transaction reference. Matches no other table.
+      - name: payment_id
+        description: The payment routed (payment_v2__payments.id).
+      - name: merchant_id
+        description: The merchant (payments.merchant_id).
+      - name: operation_type
+        description: authorize on every row so far.
+      - name: status
+        description: COMPLETED on every row so far.
+      - name: gateway_id
+        description: >
+          The chosen gateway. Holds either a connector type or a provider
+          configuration id depending on the row's age.
+      - name: routing_obj
+        description: >
+          JSON of the decision, primary.connector_type and
+          primary.provider_config_id.
+      - name: matched_rules
+        description: >
+          JSON array of the winning rules only, each with ruleId,
+          ruleName, priority and the condition results (fact, operator,
+          expected and actual value).
+      - name: created_at
+        description: Evaluation time, UTC.
       - name: updated_at
         description: Last update at source, UTC.

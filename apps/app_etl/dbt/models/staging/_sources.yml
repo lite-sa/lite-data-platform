@@ -73,12 +73,12 @@ sources:
       - name: settlement__account
         description: >
           Settlement accounts per merchant, incremental so status changes
-          and soft deletes keep history. created_by, updated_by are the
-          trim map.
+          and soft deletes keep history. created_by, updated_by hold
+          service and tool names, not people.
       - name: settlement__settlement_window
         description: >
           Settlement windows (a merchant's payout batch). created_by,
-          updated_by are the trim map.
+          updated_by hold service and tool names, not people.
       - name: settlement__instruction
         description: >
           Payout instructions; settlement_window_id -> settlement_window.id.
@@ -124,6 +124,21 @@ sources:
         description: >
           Top-up event log; topup_id -> payout__topup.id. request,
           response and comment are the trim map.
+      # Declared 2026-09-21 for the business_management, pricing_engine and
+      # smart_routing mirror tables (models/litecore/).
+      - name: pricing_engine__rule_evaluation
+        description: >
+          One row per pricing request; origin_reference ->
+          payment_operations.id for payment-v2-service. Fee terms, no
+          shopper PII.
+      - name: smart_routing__profile
+        description: >
+          Routing profiles per merchant, `replace` disposition.
+          description is free text.
+      - name: smart_routing__routing_rule
+        description: >
+          Routing rules, `replace` disposition; profile_id -> profile.id.
+          No PII.
       # Declared 2026-09-21; no staging view reads them yet.
       - name: risk_management__risk_rule
         description: >

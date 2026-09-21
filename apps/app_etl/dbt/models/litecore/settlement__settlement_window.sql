@@ -1,8 +1,9 @@
 -- Litecore mirror of raw settlement__settlement_window:
--- the latest version of every row, PII columns removed. The column list is
--- an allowlist: a new source column reaches this table only when added here.
+-- the latest version of every row. The column list is an allowlist: a new
+-- source column reaches this table only when added here.
 --
--- Left out: created_by, updated_by: staff identifiers (trim map).
+-- Left out: nothing. created_by and updated_by hold service and tool names
+-- (system, Retool-App, ops_team), never a person.
 select
     {{
         keep_columns(
@@ -11,6 +12,7 @@ select
                 'id',
                 'merchant_id',
                 'cycle_id',
+                'window_schedule_id',
                 'value_date',
                 'closing_date',
                 'window_start',
@@ -22,6 +24,8 @@ select
                 'settled_amount',
                 'currency',
                 'reviewed_at',
+                'created_by',
+                'updated_by',
                 'created_at',
                 'updated_at',
             ]
