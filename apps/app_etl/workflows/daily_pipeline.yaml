@@ -61,6 +61,10 @@ main:
         call: run_job
         args:
           job: ingest-payout
+    - extract_risk_management:
+        call: run_job
+        args:
+          job: ingest-risk-management
     # Both branches run after every extract succeeded and are independent:
     # dbt reads raw and writes core, the exports read raw and write the
     # egress bucket. A failure in either fails the execution.

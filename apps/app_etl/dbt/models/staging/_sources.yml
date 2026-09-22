@@ -124,3 +124,30 @@ sources:
         description: >
           Top-up event log; topup_id -> payout__topup.id. request,
           response and comment are the trim map.
+      # Declared 2026-09-21; no staging view reads them yet.
+      - name: risk_management__risk_rule
+        description: >
+          Rule definitions (velocity, etc.), incremental so is_enabled and
+          is_deleted changes keep history. rule_definition is a JSON string
+          (conditions/event). scope is global or merchant; merchant_id is
+          only set for merchant-scoped rules. No PII.
+      - name: risk_management__transaction_rule_evaluation
+        description: >
+          Per-rule evaluation outcome for a transaction; rule_id ->
+          risk_rule__id, transaction_id -> payments.id. A transaction can be
+          evaluated more than once (re-review); readers take the latest per
+          (rule_id, transaction_id) by evaluation_time. No PII.
+      - name: risk_management__transaction_rule_decision
+        description: >
+          Final risk decision (global/merchant/final outcome and score) for
+          a transaction; transaction_id -> payments.id. No PII.
+      - name: risk_management__velocity_bucket
+        description: >
+          Hourly aggregated velocity counters per (param_type, param_value,
+          merchant_id, bucket_hour); mutates through the hour as counts
+          accumulate, incremental on updated_at. No PII.
+      - name: risk_management__velocity_event
+        description: >
+          Individual velocity events feeding the buckets; transaction_id ->
+          payments.id. status/captured_amount can update after insert,
+          incremental on updated_at. No PII.
