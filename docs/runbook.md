@@ -327,12 +327,44 @@ limit 14"
 ## 5. End-to-end via the workflow
 
 The daily workflow (`litecore-daily`,
-`apps/app_etl/workflows/daily_pipeline.yaml`) runs the ingest fan-out
-(one Cloud Run Job per source database), then the deliver stage: the
-Slack daily summary and the merchant report export in parallel. Notify
-failure logs a warning and the run continues; export failure fails the
-execution. Cloud Scheduler triggers the workflow at 06:45 Riyadh in both
-environments.
+`apps/app_etl/workflows/daily_pipeline.yaml`) runs the ingest jobs one
+after another (one Cloud Run Job per source database), then `dbt build`.
+One Cloud Scheduler trigger runs it twice a day, at 06:45 and 14:45
+Riyadh (`45 6,14 * * *`).
+
+Two jobs run once a day on their own triggers, outside the workflow: the
+Slack daily summary (`notify-daily-summary`, 07:30) and the report export
+(`export-merchant-daily`, 07:30). Both report yesterday, so the 14:45 run
+must not fire them again. Each checks `_dlt_loads` first and refuses to
+run until raw covers the report day: notify needs a payment_v2 load and a
+mart rebuild after it, the export needs a payment_v2 and a settlement
+load. Nothing retries a refusal that day. The morning workflow takes about
+6 minutes, so 07:30 leaves a 40-minute buffer.
+
+Three schedules in total: `litecore-daily-trigger` (the workflow),
+`notify-daily-summary-trigger` and `export-merchant-daily-trigger`. The
+2026-09-21 change updates the first and creates the third:
+
+```bash
+# the workflow trigger gains the 14:45 run (cron shares the minute, so
+# one trigger covers both)
+gcloud scheduler jobs update http litecore-daily-trigger \
+  --project=lite-data-prod --location=$REGION \
+  --schedule="45 6,14 * * *" --time-zone="Asia/Riyadh"
+
+# the export, once a day after the morning run
+gcloud scheduler jobs create http export-merchant-daily-trigger \
+  --project=lite-data-prod --location=$REGION \
+  --schedule="30 7 * * *" --time-zone="Asia/Riyadh" \
+  --uri="https://run.googleapis.com/v2/projects/lite-data-prod/locations/$REGION/jobs/export-merchant-daily:run" \
+  --http-method=POST \
+  --oauth-service-account-email=sa-app-etl@lite-data-prod.iam.gserviceaccount.com
+```
+
+Order matters on rollout. Ship the image with the export's freshness
+guard first, then create the export trigger, then redeploy the workflow.
+A workflow redeployed before the export trigger exists delivers no report
+files the next morning.
 
 Redeploy after any edit to the yaml. The deploy is idempotent and does
 not touch in-flight executions; the next execution picks up the new
@@ -359,8 +391,8 @@ gcloud projects add-iam-policy-binding lite-data-prod \
 ```
 
 Trigger and inspect manually. A manual run is safe end to end: ingests
-are watermarked, the export reruns cleanly, and notify refuses stale
-data on its own:
+are watermarked and dbt restates in full. A manual run does not export
+or post to Slack; execute those jobs on their own when needed:
 
 ```bash
 gcloud workflows run litecore-daily --location=$REGION --project=lite-data-prod
@@ -368,10 +400,8 @@ gcloud workflows executions list litecore-daily --location=$REGION --project=lit
 ```
 
 For dev, swap in `$DEV` and `sa-app-etl@lite-data-dev.iam.gserviceaccount.com`.
-Before the first dev redeploy, create `export-merchant-daily` in dev, or
-every dev execution fails at the deliver stage. Do not create a dev
-notify job: it would post dev numbers to the production Slack channel,
-and a missing job only logs a warning.
+Dev needs no export trigger. Do not create a dev notify job: it would
+post dev numbers to the production Slack channel.
 
 No retry policy in v1: fix the cause, run it again.
 
