@@ -1,6 +1,6 @@
 # Daily pipeline: extraction (one Cloud Run Job per source database, one
-# after another) -> dbt build. Two Cloud Scheduler triggers execute this
-# workflow, at 06:45 and 15:00 Asia/Riyadh.
+# after another) -> dbt build. One Cloud Scheduler trigger executes this
+# workflow twice a day, at 06:45 and 14:45 Asia/Riyadh.
 #
 # Extraction is sequential because every pipeline writes the shared
 # `_dlt_pipeline_state` / `_dlt_loads` tables, and BigQuery allows 5 writes
