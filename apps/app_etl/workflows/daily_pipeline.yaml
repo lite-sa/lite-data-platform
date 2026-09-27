@@ -64,6 +64,10 @@ main:
         call: run_job
         args:
           job: ingest-risk-management
+    - extract_terminal_management:
+        call: run_job
+        args:
+          job: ingest-terminal-management
     # Runs only after every extract succeeded.
     - transform:
         call: run_job

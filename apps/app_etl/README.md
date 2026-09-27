@@ -17,6 +17,7 @@ factories.
 | `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim; snapshots below are the target) |
 | `ingestion/pricing_engine.py` | `pricing_engine`: `rule_evaluation` | incremental append on `updated_at`, as above (per-op fee evaluation; `origin_reference` = op id for `payment-v2-service` rows) |
 | `ingestion/payout.py` | `payout`: `transfer`, `transfer_transaction`, `beneficiary`, `beneficiary_transaction`, `topup`, `topup_transaction` | incremental append on `updated_at`, as above (three header/audit pairs; `transfer.direction` splits payouts from incoming wallet credits; `instruction_settlement_id` = settlement `instruction.id`) |
+| `ingestion/terminal_management.py` | `terminal_management`: `terminal` | incremental append on `updated_at`, as above (heartbeats bump `updated_at`, so an online terminal lands about one row per run; `payment_operations.terminal_id` = `tid`) |
 
 All pipelines run through the one daily workflow
 (`workflows/daily_pipeline.yaml`) — no staggered per-job schedules.
