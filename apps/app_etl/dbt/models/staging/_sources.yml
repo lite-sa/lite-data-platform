@@ -166,3 +166,11 @@ sources:
           Individual velocity events feeding the buckets; transaction_id ->
           payments.id. status/captured_amount can update after insert,
           incremental on updated_at. No PII.
+      # Declared 2026-09-27; no staging view reads it yet.
+      - name: terminal_management__terminal
+        description: >
+          POS terminals, incremental on updated_at.
+          Heartbeats bump updated_at, so raw holds about one row per online
+          terminal per run; dedup to the latest per terminal_id.
+          payment_operations.terminal_id -> tid. vendor_jwt,
+          encrypted_secret_key, trsm and user_phone are the trim map.
