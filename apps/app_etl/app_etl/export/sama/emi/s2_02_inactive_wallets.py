@@ -17,7 +17,6 @@ select
     count(*) as wallets,
     countif(is_active) as active_wallets
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

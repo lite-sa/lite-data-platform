@@ -21,7 +21,7 @@ select
     countif(rail_basis = 'amount') as by_amount_rule,
     countif(matched != 'both') as unmatched
 from ({DETAIL_SQL})
-where not is_test and rail = 'IPS'
+where rail = 'IPS'
 """
 
 if __name__ == "__main__":

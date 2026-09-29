@@ -3,7 +3,7 @@ terminal inventory and the authorized payments.
 """
 
 from app_etl.export.common import merchant_directory
-from app_etl.export.sama.common import RAW, lv
+from app_etl.export.sama.common import RAW, lv, not_deleted
 
 # Merchants with KYB approved on or before month end; each one gets an
 # ECOM account at approval. status holds the current state only. Manually
@@ -19,6 +19,7 @@ KYB_MERCHANTS = f"""(
     where status = 'KYB approved'
       and date(coalesce(kyb_approved_at, created_at), @tz) <= @month_end
       and (not coalesce(is_deleted, false) or date(deleted_at, @tz) > @month_end)
+      and {not_deleted("business_id")}
 )"""
 
 # Terminals in service at some point in the month: created by month end,
@@ -46,10 +47,12 @@ TERMINALS = f"""(
     left join {merchant_directory(RAW)} as be on be.business_id = t.merchant_id
     where date(t.created_at, @tz) <= @month_end
       and coalesce(date(t.deleted_at, @tz) >= @month_start, true)
+      and {not_deleted("t.merchant_id")}
 )"""
 
 # One row per payment authorized in the report month. Authorized = first SUCCESS on AUTHORIZE (ECOM) or on
-# AUTHORIZE, CAPTURE or PURCHASE (POS), dated in Riyadh time.
+# AUTHORIZE, CAPTURE or PURCHASE (POS), dated in Riyadh time. PENDING ops
+# never count; reversed and refunded payments stay in, nothing is netted.
 # Channel: channel_type, else the ops (only POS ops carry a terminal), else
 # a 3DS row means ECOM. Scheme: instrument_data.card_brand, else the EMV
 # application id on a POS op, else the 3DS scheme, else UNKNOWN.
@@ -62,10 +65,12 @@ AUTHORIZED_PAYMENTS = f"""(
             amount as amount_minor,
             currency,
             channel_type,
+            status,
             nullif(upper(json_value(instrument_data, '$.card_brand')), 'UNKNOWN')
                 as card_brand
         from {lv("payment_v2__payments")}
         where id not in unnest(@excluded_payment_ids)
+          and {not_deleted("merchant_id")}
     ),
     o as (
         select
@@ -151,6 +156,7 @@ AUTHORIZED_PAYMENTS = f"""(
     select
         p.payment_id,
         p.merchant_id,
+        p.status as payment_status,
         be.name as merchant_name,
         coalesce(p.merchant_id in unnest(@test_ids), false) as is_test,
         c.channel,

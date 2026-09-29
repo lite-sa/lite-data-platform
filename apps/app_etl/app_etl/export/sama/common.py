@@ -2,8 +2,9 @@
 latest-version reader and the query runner.
 
 Every query can use @month_start, @month_end (Riyadh DATEs, inclusive),
-@tz, @test_ids and @excluded_payment_ids. Answers exclude test merchants;
-detail rows keep them, flagged `is_test`.
+@tz, @test_ids, @deleted_ids and @excluded_payment_ids. Answers include test
+merchants; detail rows flag them `is_test`. Merchants hard-deleted at source
+never appear, not even in detail rows.
 """
 
 from __future__ import annotations
@@ -24,9 +25,19 @@ RAW = f"{PROJECT}.raw_litecore"
 TEST_MERCHANT_IDS = [
     "97476ad7-37a0-4288-8f7e-57d0988d3ec8",
     "e8a61e1b-f4b1-4a14-b630-cf08b0656576",
-    "2e2a8eab-0e8e-4d95-9a48-917e42249e3a",
-    "fc8bf7fe-da2a-4327-afde-641a5929f05e",
 ]
+
+# Merchants hard-deleted at source; raw keeps their history. The dbt seed
+# deleted_merchants.csv is canonical; a parity test keeps this copy equal.
+DELETED_MERCHANT_IDS = [
+    "fc8bf7fe-da2a-4327-afde-641a5929f05e",
+    "2e2a8eab-0e8e-4d95-9a48-917e42249e3a",
+]
+
+
+def not_deleted(merchant_col: str) -> str:
+    """Predicate that drops hard-deleted merchants and keeps NULL ids."""
+    return f"coalesce({merchant_col} not in unnest(@deleted_ids), true)"
 
 
 def lv(table: str) -> str:
@@ -42,6 +53,7 @@ def month_params(report_month: str) -> list:
         ),
         bigquery.ScalarQueryParameter("tz", "STRING", LOCAL_TIMEZONE),
         bigquery.ArrayQueryParameter("test_ids", "STRING", TEST_MERCHANT_IDS),
+        bigquery.ArrayQueryParameter("deleted_ids", "STRING", DELETED_MERCHANT_IDS),
         bigquery.ArrayQueryParameter(
             "excluded_payment_ids", "STRING", EXCLUDED_PAYMENT_IDS
         ),

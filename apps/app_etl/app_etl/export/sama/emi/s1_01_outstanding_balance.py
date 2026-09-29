@@ -61,7 +61,6 @@ select
     countif(balance_minor < 0) as negative_balance_wallets,
     round(sum(open_holds_minor) / 100, 2) as memo_open_holds_sar
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

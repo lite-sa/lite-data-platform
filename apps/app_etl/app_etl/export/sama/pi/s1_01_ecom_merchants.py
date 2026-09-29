@@ -49,7 +49,6 @@ select
     countif(in_population and not is_active) as inactive,
     countif(not in_population and is_active) as active_outside_population
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

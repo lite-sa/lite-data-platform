@@ -1,8 +1,9 @@
 """Section II.1: number of active wallets.
 
 Monthly. A wallet is active when it has at least one money movement
-(emi.common.IS_MOVEMENT: holds, released holds and the accounting credit legs
-left out) created in the report month. Population: emi.common.WALLETS.
+(emi.common.IS_MOVEMENT: holds, released holds, the accounting credit legs
+and compartment moves left out) created in the report month. Population:
+emi.common.WALLETS.
 """
 
 from app_etl.export.sama.common import run, show
@@ -17,7 +18,6 @@ select
     countif(is_active) as active_wallets,
     count(*) as wallets
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

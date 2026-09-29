@@ -23,7 +23,6 @@ with
 txns as (
     select channel, scheme_reported, scheme_source, amount_minor
     from ({DETAIL_SQL})
-    where not is_test
 ),
 grid as (
     select channel, channel_order, scheme, scheme_order

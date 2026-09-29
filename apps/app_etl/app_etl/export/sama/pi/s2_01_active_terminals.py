@@ -1,7 +1,9 @@
 """Section II.1: active POS terminals.
 
-Monthly. A terminal is active when its TID took at least one authorized
-POS payment in the report month. Covers POS and SOFTPOS terminal types.
+Monthly. Population: terminals created by month end and not removed
+before it started (pi.common.TERMINALS), plus any TID that took a POS
+payment in the month. Active: the TID took at least one authorized POS
+payment in the report month. Covers POS and SOFTPOS terminal types.
 Check columns: active TIDs missing from the inventory, and TIDs whose
 payment merchant differs from the inventory's current merchant.
 """
@@ -18,9 +20,9 @@ select
     countif(is_active) as active_terminals,
     countif(is_active and terminal_type = 'SOFTPOS') as of_which_softpos,
     countif(is_active and not in_inventory) as not_in_inventory,
-    countif(is_active and payment_merchant_id != merchant_id) as merchant_moved
+    countif(is_active and payment_merchant_id != merchant_id) as merchant_moved,
+    count(*) as terminals
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

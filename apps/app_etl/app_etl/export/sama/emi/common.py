@@ -3,7 +3,7 @@ rule, per-wallet activity and wallet payouts with their rail.
 """
 
 from app_etl.export.common import merchant_directory
-from app_etl.export.sama.common import RAW, lv
+from app_etl.export.sama.common import RAW, lv, not_deleted
 
 # ANB routes a payout below this amount (halalas) on IPS, the rest on SARIE.
 IPS_LIMIT_MINOR = 2_000_000
@@ -21,14 +21,18 @@ WALLETS = f"""(
         a.created_at as account_created_at
     from {lv("ledger__account")} as a
     left join {merchant_directory(RAW)} as be on be.business_id = a.owner
-    where a.tag = 'WALLET' and date(a.created_at, @tz) <= @month_end
+    where a.tag = 'WALLET'
+      and date(a.created_at, @tz) <= @month_end
+      and {not_deleted("a.owner")}
 )"""
 
-# An entry `e` that moved money: not a hold, not a released hold, and not
-# the credit leg that a capture, refund or release posts against its hold.
+# An entry `e` that moved money: not a hold, not a released hold, not the
+# credit leg that a capture, refund or release posts against its hold, and
+# not a move between two compartments of the same wallet.
 IS_MOVEMENT = """(
     e.hold_at is null
     and e.released_at is null
+    and e.type != 'RELEASE_INCOMING_TRANSFER'
     and not (
         e.direction = 'CREDIT'
         and e.type in (
@@ -103,6 +107,7 @@ payout as (
     where t.direction = 'OUTGOING'
       and t.status = 'completed'
       and t.comment like '%Transfer%'
+      and {not_deleted("t.merchant_id")}
 ),
 channel as (
     -- the ANB initiation request is the only event that carries the channel

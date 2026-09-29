@@ -35,7 +35,7 @@ join {WALLETS} as w using (account_id)
 left join {lv("settlement__instruction")} as i
     on i.id = e.external_reference_id and e.type = 'INTERNAL_SETTLEMENT'
 where e.direction = 'CREDIT'
-  and e.type != 'INCOMING_TRANSFER'
+  and e.type not in ('INCOMING_TRANSFER', 'HOLD_INCOMING_TRANSFER')
   and date(e.created_at, @tz) between @month_start and @month_end
   and {IS_MOVEMENT}
 order by e.created_at
@@ -47,7 +47,6 @@ select
     round(coalesce(sum(amount_minor), 0) / 100, 2) as value_sar,
     string_agg(distinct type, ', ') as entry_types
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

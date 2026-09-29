@@ -6,7 +6,7 @@ report month, so it reports real numbers once they exist; the ledger
 entry type a completed top-up posts is still unknown.
 """
 
-from app_etl.export.sama.common import lv, run, show
+from app_etl.export.sama.common import lv, not_deleted, run, show
 from app_etl.export.sama.emi.common import WALLETS
 
 REPORT_MONTH = "2026-08"
@@ -26,6 +26,7 @@ select
 from {lv("payout__topup")} as t
 left join {WALLETS} as w on w.account_id = t.wallet_id
 where date(t.created_at, @tz) between @month_start and @month_end
+  and {not_deleted("t.merchant_id")}
 order by t.created_at
 """
 
@@ -36,7 +37,6 @@ select
         as value_sar,
     count(*) as topups_created
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

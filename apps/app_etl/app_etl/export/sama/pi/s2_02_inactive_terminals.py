@@ -1,9 +1,9 @@
 """Section II.2: inactive POS terminals.
 
-Monthly. Terminals still installed at month end (not removed by then)
-with no authorized POS payment in the report month, from the same rows
-as Section II.1. ASSIGNED terminals are allocated to a merchant but not
-yet activated on the device; they count as inactive.
+Monthly. The Section II.1 population (terminals in service in the month,
+including those pulled out in it, plus TIDs that took a payment) minus
+the active terminals. ASSIGNED terminals are allocated to a merchant but
+not yet activated on the device; they count as inactive.
 """
 
 from app_etl.export.sama.common import run, show
@@ -15,14 +15,12 @@ DETAIL_SQL = TERMINAL_ACTIVITY
 
 ANSWER_SQL = f"""
 select
-    countif(is_installed and not is_active) as inactive_terminals,
-    countif(is_installed and not is_active and terminal_status = 'ASSIGNED')
-        as of_which_assigned,
-    countif(is_installed and not is_active and terminal_type = 'SOFTPOS')
-        as of_which_softpos,
-    countif(is_installed) as installed_at_month_end
+    countif(not is_active) as inactive_terminals,
+    countif(not is_active and terminal_status = 'ASSIGNED') as of_which_assigned,
+    countif(not is_active and terminal_type = 'SOFTPOS') as of_which_softpos,
+    countif(not is_active and is_pulled_out) as of_which_pulled_out,
+    count(*) as terminals
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

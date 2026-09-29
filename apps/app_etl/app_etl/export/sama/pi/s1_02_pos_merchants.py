@@ -61,7 +61,6 @@ select
     countif(not is_active) as inactive,
     countif(not has_terminal) as active_without_terminal
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":

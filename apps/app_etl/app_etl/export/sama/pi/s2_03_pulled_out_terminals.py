@@ -18,7 +18,6 @@ select
     countif(is_pulled_out) as pulled_out_terminals,
     countif(is_pulled_out and is_active) as of_which_active_in_month
 from ({DETAIL_SQL})
-where not is_test
 """
 
 if __name__ == "__main__":
