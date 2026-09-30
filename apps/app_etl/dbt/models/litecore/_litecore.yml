@@ -1,6 +1,6 @@
 # Docs and tests for the litecore mirror: the payment_v2, ledger,
-# settlement, checkout_session, payout, business_management, pricing_engine
-# and smart_routing raw tables, PII columns removed, built into the core
+# settlement, checkout_session, payout, business_management, pricing_engine,
+# smart_routing and terminal_management raw tables, PII columns removed, built into the core
 # dataset next to the marts. Every description here lands on
 # the BigQuery table or column (persist_docs) and Metabase shows it, so:
 # short, plain, under 1,024 characters (tests/test_dbt_docs.py). Each table
@@ -17,7 +17,7 @@ models:
       splits (shopper, card and request data). Amounts are minor units
       (halalas for SAR). instrument_data, risk_result and routing_result
       are JSON strings, read them with JSON_VALUE. Test merchants are
-      included, filter with core.test_merchants. Rebuilt every morning.
+      included, filter with core.test_merchants. Rebuilt five times a day.
     columns:
       - name: id
         description: The payment id (uuid). payments.payment_id in core.
@@ -87,10 +87,10 @@ models:
     description: >
       Redacted copy of LiteCore payment_v2.payment_operations, the latest
       version of every operation, one row per id. Removed column: metadata
-      (the provider request and response payloads and POS receipt fields).
-      payment_id joins payment_v2__payments. Amounts are minor units. On
+      (the provider request and response payloads and POS receipt fields),
+      except its emv_aid key. payment_id joins payment_v2__payments. Amounts are minor units. On
       POS, idempotency_key holds the receipt references RRN;STAN;TID.
-      Rebuilt every morning.
+      Rebuilt five times a day.
     columns:
       - name: id
         description: The operation id (uuid).
@@ -156,6 +156,13 @@ models:
         description: Operation creation, UTC.
       - name: updated_at
         description: Last update at source, UTC.
+      - name: emv_aid
+        description: >
+          EMV application id the card chose on a POS operation, from the
+          metadata payload. The first 10 characters name the scheme:
+          A000000228 MADA, A000000003 VISA, A000000004 MASTERCARD,
+          A000000025 AMEX. A few POS rows hold the literal [object Object]
+          (an upstream bug). NULL on ecom.
 
   - name: payment_v2__threeds
     description: >
@@ -165,7 +172,7 @@ models:
       device, order_data (cardholder, browser and basket), the
       authentication_value cryptogram, xid, creq, acs_url, return_url,
       redirect_url and idempotency_key. Protocol results and message ids
-      stay. Rebuilt every morning.
+      stay. Rebuilt five times a day.
     columns:
       - name: id
         description: The authentication attempt id (uuid).
@@ -238,8 +245,8 @@ models:
       version of every payment link, one row per id. Removed columns:
       public_token, redirect_urls, description, customer, metadata and
       created_by. payments.payment_link_id references id. Amount in minor
-      units. The counters are the source's own tallies. Rebuilt every
-      morning.
+      units. The counters are the source's own tallies. Rebuilt five times
+      a day.
     columns:
       - name: id
         description: The link id (uuid). payments.payment_link_id references it.
@@ -293,7 +300,7 @@ models:
       latest version of every payment-link open, one row per id. link_id
       joins payment_v2__payment_link. Removed columns: ip_address,
       user_agent, session_id and hosted_url. Status and timing stay.
-      Rebuilt every morning.
+      Rebuilt five times a day.
     columns:
       - name: id
         description: The open id (uuid). payments.payment_link_consumption_id references it.
@@ -321,8 +328,8 @@ models:
       through (merchant_id, order_id); several sessions or payments can
       share one order. status is written lazily at source, so Pending
       past expires_on means expired. Test merchants are included, filter
-      with core.test_merchants. Amount in minor units. Rebuilt every
-      morning.
+      with core.test_merchants. Amount in minor units. Rebuilt five times
+      a day.
     columns:
       - name: id
         description: The session id (uuid).
@@ -364,7 +371,7 @@ models:
       ledger account, one row per id. Removed columns: account_number,
       virtual_iban and opened_by. Merchant acceptance pools and wallets,
       scheme pools and system accounts. available_balance is minor units
-      as of the latest version. Rebuilt every morning.
+      as of the latest version. Rebuilt five times a day.
     columns:
       - name: id
         description: The ledger account id (uuid). ledger__entry.account_id references it.
@@ -414,7 +421,7 @@ models:
       the payment operation (payment_v2__payment_operations.id) or
       settlement leg that caused the entry. The debit and credit legs of
       one posting share parent_transaction_id. Amounts are minor units.
-      Rebuilt every morning.
+      Rebuilt five times a day.
     columns:
       - name: id
         description: The entry id (uuid).
@@ -469,7 +476,7 @@ models:
       settlement account, one row per id. No column removed. A merchant's
       payout destination, INTERNAL (wallet) or EXTERNAL (bank).
       settlement__instruction.destination_account_id references it.
-      Rebuilt every morning.
+      Rebuilt five times a day.
     columns:
       - name: id
         description: The settlement account id (uuid).
@@ -504,7 +511,7 @@ models:
       window is one merchant's payout batch for one collection day, cycle
       and window schedule. settlement__transaction rows are
       its legs, settlement__instruction rows its payouts. Amounts are
-      minor units. Rebuilt every morning.
+      minor units. Rebuilt five times a day.
     columns:
       - name: id
         description: The window id (uuid).
@@ -562,7 +569,7 @@ models:
       of every payout instruction, one row per id. No columns removed, the
       table holds no PII. settlement_window_id joins
       settlement__settlement_window, destination_account_id joins
-      settlement__account. Amount in minor units. Rebuilt every morning.
+      settlement__account. Amount in minor units. Rebuilt five times a day.
     columns:
       - name: id
         description: The instruction id (uuid).
@@ -595,7 +602,7 @@ models:
       operation. parent_payment_id joins payment_v2__payments,
       external_reference_id joins payment_v2__payment_operations,
       settlement_window_id the window that pays it. Amounts are minor
-      units. fees is a JSON array string. Rebuilt every morning.
+      units. fees is a JSON array string. Rebuilt five times a day.
     columns:
       - name: id
         description: The leg id (uuid).
@@ -642,10 +649,11 @@ models:
     description: >
       Redacted copy of LiteCore payout.transfer, the latest version of every
       money movement, one row per id. Removed columns: incoming_details,
-      comment, initiated_by and checker_id. direction splits OUTGOING
+      comment (except the is_beneficiary_transfer flag), initiated_by and
+      checker_id. direction splits OUTGOING
       payouts from INCOMING wallet credits found on ANB statements, and
       status means different things per direction. Amounts are minor
-      units. fees is a JSON string. Rebuilt every morning.
+      units. fees is a JSON string. Rebuilt five times a day.
     columns:
       - name: id
         description: The transfer id (uuid). payout__transfer_transaction.transfer_id references it.
@@ -704,14 +712,20 @@ models:
         description: Transfer creation, UTC.
       - name: updated_at
         description: Last update at source, UTC.
+      - name: is_beneficiary_transfer
+        description: >
+          True when the removed comment says Transfer (Transfer to
+          beneficiary): a payout the merchant sent from its wallet. False on
+          settlement payouts (comment Settlement plus a timestamp). NULL on
+          INCOMING rows.
 
   - name: payout__transfer_transaction
     description: >
       Redacted copy of LiteCore payout.transfer_transaction, the latest
       version of every payout event, one row per id. Removed columns:
-      request, response and comment. One row per hop of a transfer (ledger
+      request (except its channel key), response and comment. One row per hop of a transfer (ledger
       hold, OTP, checker, ANB initiation and verification, statement
-      reconciliation, hold capture or release). Rebuilt every morning.
+      reconciliation, hold capture or release). Rebuilt five times a day.
     columns:
       - name: id
         description: The event id (uuid). ledger__entry.external_reference_id carries it on payout entries.
@@ -746,6 +760,12 @@ models:
         description: When the event happened, UTC.
       - name: updated_at
         description: Last update at source, UTC.
+      - name: channel
+        description: >
+          The rail requested from ANB, from the request payload: IPS,
+          SARIE or ANB (an ANB-to-ANB transfer). Set on
+          BANK_TRANSFER_INITIATION_RECORDED and some LEDGER_HOLD_RELEASED
+          events, NULL on the rest.
 
   - name: payout__beneficiary
     description: >
@@ -754,7 +774,7 @@ models:
       name, creditor_party_name, created_by and checker_id. A merchant's
       bank accounts for payouts (tag transfer) and for settlement (tag
       settlement), with the maker-checker state. Soft deletes stay as
-      is_deleted = true. Rebuilt every morning.
+      is_deleted = true. Rebuilt five times a day.
     columns:
       - name: id
         description: The beneficiary id (uuid). payout__transfer.beneficiary_id references it.
@@ -802,7 +822,7 @@ models:
       version of every beneficiary event, one row per id. Removed columns:
       request, response and comment. One row per hop of a beneficiary's
       onboarding (ANB verification, OTP, checker or back-office decision).
-      Rebuilt every morning.
+      Rebuilt five times a day.
     columns:
       - name: id
         description: The event id (uuid).
@@ -825,7 +845,7 @@ models:
       Redacted copy of LiteCore payout.topup, the latest version of every
       wallet top-up, one row per id. Removed column: checkout_session_data.
       A merchant funds a Business wallet by paying a hosted checkout
-      session. Amounts are minor units. Rebuilt every morning.
+      session. Amounts are minor units. Rebuilt five times a day.
     columns:
       - name: id
         description: The top-up id (topup- prefix plus uuid). payout__topup_transaction.topup_id references it.
@@ -853,7 +873,7 @@ models:
     description: >
       Redacted copy of LiteCore payout.topup_transaction, the latest
       version of every top-up event, one row per id. Removed columns:
-      request, response and comment. Rebuilt every morning.
+      request, response and comment. Rebuilt five times a day.
     columns:
       - name: id
         description: The event id (uuid).
@@ -883,7 +903,7 @@ models:
       Join to payments on business_id, not id. Registry fields come from
       Wathq (the commercial registration service) and are NULL until the
       merchant submits a CR. The source table is overwritten every run, so
-      no history. Rebuilt every morning.
+      no history. Rebuilt five times a day.
     columns:
       - name: id
         description: The business entity id (uuid). channels.business_id references it.
@@ -1004,8 +1024,8 @@ models:
       of 182 channels.
       payments.channel_id and checkout sessions' channel_id reference id.
       business_id is business_entities.id, not the merchant id. The
-      source table is overwritten every run, so no history. Rebuilt every
-      morning.
+      source table is overwritten every run, so no history. Rebuilt five times
+      a day.
     columns:
       - name: id
         description: The channel id (uuid). payments.channel_id.
@@ -1063,7 +1083,7 @@ models:
       than once, take the latest per origin_reference. matched_rules,
       winning_rule and applied_price are JSON strings holding the
       merchant's fee terms, read them with JSON_VALUE. Amounts are minor
-      units. Rebuilt every morning.
+      units. Rebuilt five times a day.
     columns:
       - name: id
         description: The evaluation id (uuid).
@@ -1104,7 +1124,7 @@ models:
       routing profiles, one row per id. Removed column: description (free
       text). A profile groups routing rules, smart_routing__routing_rule
       rows reference it. The source table is overwritten every run, so no
-      history. Rebuilt every morning.
+      history. Rebuilt five times a day.
     columns:
       - name: id
         description: The profile id (uuid).
@@ -1135,7 +1155,7 @@ models:
       conditions on payment facts (amount, processingType, currency) and
       the gateway to route to. Amounts in conditions are minor units. The
       rule with the higher priority wins. The source table is overwritten
-      every run, so no history. Rebuilt every morning.
+      every run, so no history. Rebuilt five times a day.
     columns:
       - name: id
         description: The rule id (uuid). ruleId inside transaction_evaluation.matched_rules.
@@ -1170,7 +1190,7 @@ models:
       inbound payment event) and published_event. Ecom only, POS payments
       never route. Join to payments on payment_id, transaction_id matches
       no table. routing_obj and matched_rules are JSON strings. Rebuilt
-      every morning.
+      five times a day.
     columns:
       - name: id
         description: The evaluation id (uuid).
@@ -1204,3 +1224,62 @@ models:
         description: Evaluation time, UTC.
       - name: updated_at
         description: Last update at source, UTC.
+
+  - name: terminal_management__terminal
+    description: >
+      Redacted copy of LiteCore terminal_management.terminal, the POS and
+      SoftPOS terminal inventory, one row per terminal_id (the latest
+      version). Removed columns: vendor_jwt, encrypted_secret_key,
+      kms_key_version, trsm, user_phone, device_fingerprint,
+      mqtt_client_id, notes, tags, metadata, created_by, updated_by,
+      terminal_name, vendor_terminal_id and vendor_merchant_id (secrets,
+      contact and device identifiers, free text). tid joins
+      payment_v2__payment_operations.terminal_id. Only the current
+      merchant is kept: a terminal moved between merchants shows its new
+      owner. Rebuilt five times a day.
+    columns:
+      - name: terminal_id
+        description: The terminal id (uuid). Not the TID on payments; that is tid.
+        tests: [not_null, unique]
+      - name: tid
+        description: >
+          The terminal id the card networks see. Joins
+          payment_v2__payment_operations.terminal_id.
+      - name: merchant_id
+        description: The current owner (business_entities.business_id).
+      - name: business_account_id
+        description: Business account the terminal belongs to. NULL on every row so far.
+      - name: channel_id
+        description: The sales channel (business_management__channels.id).
+      - name: terminal_type
+        description: POS (a physical device) or SOFTPOS (a phone).
+      - name: terminal_source
+        description: Who provisioned it. NEARPAY_BANKS on every row so far.
+      - name: make
+        description: Device maker, for example Newland or samsung (case varies).
+      - name: model
+        description: Device model, for example N950.
+      - name: operating_system
+        description: Device operating system.
+      - name: software_version
+        description: Terminal app version.
+      - name: status
+        description: >
+          ASSIGNED (allocated, never activated), ACTIVE or TERMINATED
+          (taken back, deleted_at set).
+      - name: network_status
+        description: Network state the device reported. NULL on every row so far.
+      - name: connection_status
+        description: Connection state the device reported. UNKNOWN on every row so far.
+      - name: last_active_date
+        description: Last activity the device reported, UTC.
+      - name: last_heartbeat
+        description: Last heartbeat, UTC.
+      - name: last_seen_at
+        description: Last time the service saw the device, UTC.
+      - name: created_at
+        description: Terminal creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC. Heartbeats bump it.
+      - name: deleted_at
+        description: Soft delete, the day the terminal was pulled out, UTC. NULL while in service.

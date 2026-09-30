@@ -9,7 +9,7 @@ models:
       One row per payment: merchant, channel and entry mode, card facts,
       the decision and the gateway that made it, 3DS and routing
       milestones, outcome and failure category, booked amounts. Rebuilt in
-      full every morning from the staging views. Test merchants and
+      full five times a day from the staging views. Test merchants and
       incident-excluded payments are removed. No PII. Columns ending in
       _minor or _total are minor units; amount, captured_amount,
       refunded_amount and reversed_amount are major units of currency.
@@ -306,7 +306,7 @@ models:
       Daily payment funnel: one row per payment_creation_date × merchant ×
       channel × entry_mode × gateway × card_brand × currency ×
       payment_method. Built from the payments table and restated in full
-      every morning. The three outcome counts partition request_count.
+      on every run. The three outcome counts partition request_count.
       Amounts are major units of currency, attributed to the payment's
       creation day.
     columns:

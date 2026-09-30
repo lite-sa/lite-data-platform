@@ -4,13 +4,18 @@
 --
 -- Left out: metadata: raw provider request and response payloads (trim map). The POS
 -- receipt scalars it carries are on the payments mart (auth_external_op,
--- auth_verification, failure_outcome). idempotency_key stays: on POS it is the
--- receipt reference triple (RRN;STAN;TID), and no prod value looks like an
--- email or a phone number (probe 2026-09-09).
+-- auth_verification, failure_outcome). One key passes as its own column:
+-- emv_aid, the card's EMV application id (a public scheme and product
+-- code, not a card identifier), which the SAMA scheme split needs.
+-- idempotency_key stays: on POS it is the receipt reference triple
+-- (RRN;STAN;TID), and no prod value looks like an email or a phone number
+-- (probe 2026-09-09).
+{% set ops = source('litecore', 'payment_v2__payment_operations') -%}
+{%- set ops_columns = adapter.get_columns_in_relation(ops) | map(attribute="name") | map("lower") | list -%}
 select
     {{
         keep_columns(
-            source('litecore', 'payment_v2__payment_operations'),
+            ops,
             [
                 'id',
                 'payment_id',
@@ -38,8 +43,13 @@ select
                 'updated_at',
             ]
         )
-    }}
-from {{ source('litecore', 'payment_v2__payment_operations') }}
+    }},
+    {% if "metadata" in ops_columns -%}
+        json_value(metadata, '$.emv_aid')
+    {%- else -%}
+        cast(null as string)
+    {%- endif %} as emv_aid
+from {{ ops }}
 qualify
     row_number() over (
         partition by id order by updated_at desc, _dlt_load_id desc

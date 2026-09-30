@@ -58,6 +58,10 @@ are hardcoded zeros that we file by hand.
   incident, listed in `EXCLUDED_PAYMENT_IDS` (copy of the dbt seed
   `incident_excluded_payments.csv`). Raw never sees a source DELETE, so we
   filter these by id.
+- **Scheme correction**: a payment whose `instrument_data.card_brand`
+  names the wrong scheme, listed in `SCHEME_CORRECTIONS` (copy of the dbt
+  seed `scheme_corrections.csv`) with the scheme the operations team
+  confirmed. The correction wins over every other scheme source.
 - **Total, active, inactive**: every count on both sheets follows one rule.
   Total is cumulative to month end. Active means activity inside the report
   month. Inactive is total minus active.
@@ -108,13 +112,15 @@ practice that means `AUTHORIZE` for ECOM and `CAPTURE` for POS. No
 
 **Scheme**, first non-null wins:
 
-1. `upper(json_value(instrument_data, '$.card_brand'))`, with `UNKNOWN`
+1. The scheme correction for the payment, if any (`scheme_source =
+   'correction'`).
+2. `upper(json_value(instrument_data, '$.card_brand'))`, with `UNKNOWN`
    treated as null.
-2. The EMV application id on a POS operation, `substr(json_value(metadata,
+3. The EMV application id on a POS operation, `substr(json_value(metadata,
    '$.emv_aid'), 1, 10)`: `A000000228` MADA, `A000000003` VISA,
    `A000000004` MASTERCARD, `A000000025` AMEX.
-3. `upper(threeds.authentication_scheme)`.
-4. `UNKNOWN`.
+4. `upper(threeds.authentication_scheme)`.
+5. `UNKNOWN`.
 
 The sheet reports MADA, VISA and MASTERCARD. Every other scheme goes to
 `Other`, including `UNKNOWN`.
@@ -385,6 +391,13 @@ instead.
 - **Current KYB status only**: `business_entities.status` holds today's
   state. A merchant approved in August and suspended in October drops out
   of August when you rerun it in November.
+- **card_brand can name the wrong scheme**: some POS payments on mada
+  cards carry VISA or MASTERCARD in `card_brand`. The cause upstream is
+  not known yet. The first list (2026-09-30) moved 16 September POS payments, SAR 8,010.48,
+  to MADA. Ten of them carried a mada EMV AID that `card_brand`
+  outranked; six had no AID. A further 16 September POS payments show the
+  reverse (`card_brand` MADA, AID VISA) and stay as MADA until someone
+  confirms them.
 - **Test merchants move the EMI balance**: in August 2026 one test wallet
   held SAR 48,612.23 of the SAR 48,657.45 total. Read the `is_test` rows
   in the I.1 detail before filing.

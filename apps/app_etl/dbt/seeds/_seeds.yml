@@ -13,6 +13,49 @@ seeds:
       - name: merchant_id
         tests: [not_null, unique]
 
+  - name: deleted_merchants
+    description: >
+      Merchants hard-deleted at source. Append-only raw keeps their history, so
+      every model and export drops them outright, SAMA detail rows included.
+      Test merchants are a separate list. The SAMA export mirrors this list as
+      DELETED_MERCHANT_IDS (parity-tested in tests/test_sama_reports.py).
+      Append-only.
+    config:
+      column_types:
+        merchant_id: string
+        deleted_on: date
+        note: string
+    columns:
+      - name: merchant_id
+        tests: [not_null, unique]
+      - name: deleted_on
+        tests: [not_null]
+
+  - name: scheme_corrections
+    description: >
+      Payments whose instrument_data.card_brand names the wrong card scheme,
+      with the scheme the operations team confirmed. The SAMA export mirrors
+      this list as SCHEME_CORRECTIONS (parity-tested in
+      tests/test_sama_reports.py) and lets it win over every other scheme
+      source. Append-only.
+    config:
+      column_types:
+        payment_id: string
+        recorded_scheme: string
+        actual_scheme: string
+        reported_on: date
+        note: string
+    columns:
+      - name: payment_id
+        tests: [not_null, unique]
+      - name: actual_scheme
+        tests:
+          - not_null
+          - accepted_values:
+              values: [MADA, VISA, MASTERCARD, AMEX]
+      - name: reported_on
+        tests: [not_null]
+
   - name: incident_excluded_payments
     description: >
       Payments hand-deleted or ledger-reversed upstream during incident remediation.

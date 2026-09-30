@@ -14,8 +14,9 @@
 -- restate and reruns are idempotent. The partition / cluster layout already
 -- fits an incremental merge on payment_id if the daily scan grows.
 --
--- Test merchants and incident-remediated payments are excluded through the
--- test_merchants and incident_excluded_payments seeds. Reads only staging
+-- Test merchants, merchants hard-deleted at source and incident-remediated
+-- payments are excluded through the test_merchants, deleted_merchants and
+-- incident_excluded_payments seeds. Reads only staging
 -- views: a new column goes into a staging view first.
 --
 -- Decision contract: the decision op family is AUTHORIZE on ecom and
@@ -25,6 +26,8 @@
 with
 
     test_merchants as (select merchant_id from {{ ref('test_merchants') }}),
+
+    deleted_merchants as (select merchant_id from {{ ref('deleted_merchants') }}),
 
     incident_exclusions as (
         select payment_id from {{ ref('incident_excluded_payments') }}
@@ -62,8 +65,9 @@ with
             pay.updated_at as source_updated_at
         from {{ ref('stg_litecore__payments') }} as pay
         left join test_merchants as tm on pay.merchant_id = tm.merchant_id
+        left join deleted_merchants as dm on pay.merchant_id = dm.merchant_id
         left join incident_exclusions as ix on pay.payment_id = ix.payment_id
-        where tm.merchant_id is null and ix.payment_id is null
+        where tm.merchant_id is null and dm.merchant_id is null and ix.payment_id is null
 
     ),
 

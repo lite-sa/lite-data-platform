@@ -3,7 +3,7 @@ terminal inventory and the authorized payments.
 """
 
 from app_etl.export.common import merchant_directory
-from app_etl.export.sama.common import RAW, lv, not_deleted
+from app_etl.export.sama.common import RAW, lv, not_deleted, scheme_corrections
 
 # Merchants with KYB approved on or before month end; each one gets an
 # ECOM account at approval. status holds the current state only. Manually
@@ -54,8 +54,9 @@ TERMINALS = f"""(
 # AUTHORIZE, CAPTURE or PURCHASE (POS), dated in Riyadh time. PENDING ops
 # never count; reversed and refunded payments stay in, nothing is netted.
 # Channel: channel_type, else the ops (only POS ops carry a terminal), else
-# a 3DS row means ECOM. Scheme: instrument_data.card_brand, else the EMV
-# application id on a POS op, else the 3DS scheme, else UNKNOWN.
+# a 3DS row means ECOM. Scheme: a hand correction, else
+# instrument_data.card_brand, else the EMV application id on a POS op, else
+# the 3DS scheme, else UNKNOWN.
 AUTHORIZED_PAYMENTS = f"""(
     with
     p as (
@@ -142,14 +143,17 @@ AUTHORIZED_PAYMENTS = f"""(
     scheme as (
         select
             p.payment_id,
-            coalesce(p.card_brand, s.emv_scheme, d.scheme, 'UNKNOWN') as scheme,
+            coalesce(x.scheme, p.card_brand, s.emv_scheme, d.scheme, 'UNKNOWN')
+                as scheme,
             case
+                when x.scheme is not null then 'correction'
                 when p.card_brand is not null then 'instrument_data'
                 when s.emv_scheme is not null then 'emv_aid'
                 when d.scheme is not null then 'threeds'
                 else 'unknown'
             end as scheme_source
         from p
+        left join {scheme_corrections()} as x using (payment_id)
         left join pos_ops as s using (payment_id)
         left join threeds as d using (payment_id)
     )
