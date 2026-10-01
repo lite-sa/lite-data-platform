@@ -315,8 +315,9 @@ models:
     description: >
       Redacted copy of LiteCore checkout_session.checkout_sessions, the
       latest version of every hosted checkout session, one row per id.
-      Removed columns: customer, order_data, metadata, payment_url,
-      redirect_urls, idempotency_key and splits. Links to payments only
+      Removed columns: customer (only customer_id_hash survives),
+      order_data, metadata, payment_url, redirect_urls, idempotency_key
+      and splits. Links to payments only
       through (merchant_id, order_id); several sessions or payments can
       share one order. status is written lazily at source, so Pending
       past expires_on means expired. Test merchants are included, filter
@@ -356,6 +357,13 @@ models:
         description: Session creation, UTC.
       - name: updated_at
         description: Last update at source, UTC.
+      - name: customer_id_hash
+        description: >
+          SHA-256 hex of merchant_id and the merchant's customer.id, the
+          only trace of the removed customer column. Groups one customer's
+          sessions within a merchant, for customer-level acceptance; NULL
+          when the merchant sent no customer id, so fall back to the
+          session id. Not reversible, not comparable across merchants.
 
   - name: ledger__account
     description: >
