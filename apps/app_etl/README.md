@@ -14,10 +14,13 @@ factories.
 | `ingestion/payment_v2.py` | `payment_v2`: `payments`, `payment_operations` | incremental append on `updated_at` — one row per version |
 | `ingestion/ledger.py` | `ledger`: `account`, `entry` | incremental append on `updated_at`, as above |
 | `ingestion/smart_routing.py` | `smart_routing`: `profile`, `routing_rule` / `transaction_evaluation` | full replace (interim) / incremental append |
-| `ingestion/business_management.py` | `business_management`: `business_entities` | full replace (interim; snapshots below are the target) |
+| `ingestion/business_management.py` | `business_management`: `business_entities`, `channels`, `business_representatives` | full replace (interim; snapshots below are the target) |
+| `ingestion/settlement.py` | `settlement`: `account`, `settlement_window`, `instruction`, `transaction`, `cycle`, `account_cycle`, `merchant_window_schedule` | incremental append on `updated_at`, as above |
 | `ingestion/pricing_engine.py` | `pricing_engine`: `rule_evaluation` | incremental append on `updated_at`, as above (per-op fee evaluation; `origin_reference` = op id for `payment-v2-service` rows) |
 | `ingestion/payout.py` | `payout`: `transfer`, `transfer_transaction`, `beneficiary`, `beneficiary_transaction`, `topup`, `topup_transaction` | incremental append on `updated_at`, as above (three header/audit pairs; `transfer.direction` splits payouts from incoming wallet credits; `instruction_settlement_id` = settlement `instruction.id`) |
 | `ingestion/terminal_management.py` | `terminal_management`: `terminal` | incremental append on `updated_at`, as above (heartbeats bump `updated_at`, so an online terminal lands about one row per run; `payment_operations.terminal_id` = `tid`) |
+| `ingestion/user.py` | `user`: `users`, `user_invitations`, `merchants`, `merchants_users`, `users_info` | full replace, no history (`users.updated_at` is nullable) |
+| `ingestion/iam.py` | `iam`: `identities`, `users`, `user_assignments` | full replace, no history (removing a role hard-deletes its assignment row) |
 
 All pipelines run through the one daily workflow
 (`workflows/daily_pipeline.yaml`) — no staggered per-job schedules.

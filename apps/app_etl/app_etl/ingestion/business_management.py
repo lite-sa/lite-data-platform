@@ -1,10 +1,15 @@
 """business_management database ->
-{BQ_DATASET_RAW}.business_management__{business_entities,channels}.
+{BQ_DATASET_RAW}.business_management__{business_entities,channels,
+business_representatives}.
 
-Two small config tables, full extract every run, `replace` disposition.
-`channels.business_id` -> business_entities.id.
+Small tables, full extract every run, `replace` disposition. A business
+can be hard-deleted, which an incremental cursor would never see.
+`channels.business_id` and `business_representatives.business_id` ->
+business_entities.id.
 
-Sensitive columns: channels.created_by / updated_by (operator identifiers).
+Sensitive columns: channels.created_by / updated_by (operator identifiers);
+business_representatives.phone_number, name, national_id, date_of_birth,
+yakeen_* (the person's verified name parts).
 """
 
 from __future__ import annotations
@@ -50,9 +55,23 @@ def run() -> None:
         cluster="business_id",
     )
 
+    business_representatives = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="business_representatives",
+        ).apply_hints(
+            table_name=f"{DATABASE}__business_representatives",
+            write_disposition="replace",
+        ),
+        cluster="business_id",
+    )
+
     pipeline = bq_pipeline(DATABASE, settings)
     load_info = pipeline.run(
-        [business_entities, channels], loader_file_format="parquet", refresh=refresh_mode()
+        [business_entities, channels, business_representatives],
+        loader_file_format="parquet",
+        refresh=refresh_mode(),
     )
     # per-table extracted row counts — load_info's summary doesn't include them
     print(pipeline.last_trace.last_normalize_info)

@@ -68,6 +68,14 @@ main:
         call: run_job
         args:
           job: ingest-terminal-management
+    - extract_user:
+        call: run_job
+        args:
+          job: ingest-user
+    - extract_iam:
+        call: run_job
+        args:
+          job: ingest-iam
     # Runs only after every extract succeeded.
     - transform:
         call: run_job

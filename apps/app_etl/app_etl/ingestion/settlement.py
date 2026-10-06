@@ -1,15 +1,21 @@
 """settlement database -> {BQ_DATASET_RAW}.settlement__{account,
-settlement_window,instruction,transaction}.
+settlement_window,instruction,transaction,cycle,account_cycle,
+merchant_window_schedule}.
 
 All tables incremental append on `updated_at` with the safety-lag cap.
 `account` is incremental, not a `replace` snapshot: reporting needs the
-history of its `status` and `is_deleted` changes.
+history of its `status` and `is_deleted` changes. The schedule config
+tables are incremental for the same reason: which schedule an account
+was on at a past date.
 
 Joins: `transaction.parent_payment_id` -> payments.id;
-`transaction.external_reference_id` -> payment_operations.id.
-`transaction.fees` is jsonb[] and lands as a STRING holding a JSON array.
+`transaction.external_reference_id` -> payment_operations.id;
+`account_cycle.account_id` -> account.id, `.cycle_id` -> cycle.id,
+`.window_schedule_id` -> merchant_window_schedule.id.
+`transaction.fees` (jsonb[]) and `merchant_window_schedule.start_times`
+(text[]) land as STRINGs holding a JSON array.
 
-Skipped: `cycle`, `account_cycle` (schedule config), `databasechangelog*`.
+Skipped: `databasechangelog*`.
 """
 
 from __future__ import annotations
@@ -98,9 +104,64 @@ def run() -> None:
         cluster="settlement_window_id",
     )
 
+    cycle = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="cycle",
+            query_adapter_callback=cap_upper_bound,
+        ).apply_hints(
+            table_name=f"{DATABASE}__cycle",
+            primary_key="id",
+            incremental=capped_incremental("updated_at"),
+            write_disposition="append",
+        ),
+        partition="updated_at",
+    )
+
+    account_cycle = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="account_cycle",
+            query_adapter_callback=cap_upper_bound,
+        ).apply_hints(
+            table_name=f"{DATABASE}__account_cycle",
+            primary_key="id",
+            incremental=capped_incremental("updated_at"),
+            write_disposition="append",
+        ),
+        partition="updated_at",
+        cluster="account_id",
+    )
+
+    merchant_window_schedule = bq_resource(
+        sql_table(
+            credentials=credentials,
+            schema="public",
+            table="merchant_window_schedule",
+            query_adapter_callback=cap_upper_bound,
+        ).apply_hints(
+            table_name=f"{DATABASE}__merchant_window_schedule",
+            primary_key="id",
+            incremental=capped_incremental("updated_at"),
+            write_disposition="append",
+        ),
+        partition="updated_at",
+        cluster="merchant_id",
+    )
+
     pipeline = bq_pipeline(DATABASE, settings)
     load_info = pipeline.run(
-        [account, settlement_window, instruction, transaction],
+        [
+            account,
+            settlement_window,
+            instruction,
+            transaction,
+            cycle,
+            account_cycle,
+            merchant_window_schedule,
+        ],
         loader_file_format="parquet",
         refresh=refresh_mode(),
     )
