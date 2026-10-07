@@ -42,6 +42,7 @@ def run() -> None:
             table_name=f"{DATABASE}__identities",
             write_disposition="replace",
         ),
+        cluster="id",
     )
 
     users = bq_resource(
@@ -53,6 +54,7 @@ def run() -> None:
             table_name=f"{DATABASE}__users",
             write_disposition="replace",
         ),
+        cluster="id",
     )
 
     user_assignments = bq_resource(

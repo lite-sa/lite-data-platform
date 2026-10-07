@@ -42,6 +42,7 @@ def run() -> None:
             table_name=f"{DATABASE}__users",
             write_disposition="replace",
         ),
+        cluster="id",
     )
 
     user_invitations = bq_resource(
@@ -65,6 +66,7 @@ def run() -> None:
             table_name=f"{DATABASE}__merchants",
             write_disposition="replace",
         ),
+        cluster="id",
     )
 
     merchants_users = bq_resource(

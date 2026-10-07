@@ -117,3 +117,28 @@ def test_bq_resource_partition_hint():
     schema = bq_resource(rows(), partition="updated_at").compute_table_schema()
     assert schema["columns"]["updated_at"].get("x-bigquery-partition") is True
     assert schema.get("x-bigquery-autodetect-schema") is True
+
+
+def test_bq_resource_keeps_reflected_columns():
+    """Column types set before bq_resource (as sql_table() reflects them)
+    survive the adapter, so a JSONB column stays one json column.
+    """
+
+    @dlt.resource(name="t", columns={"id": {"data_type": "text"}, "payload": {"data_type": "json"}})
+    def rows():
+        yield {"id": "a", "payload": {"k": "v"}}
+
+    schema = bq_resource(rows(), cluster="id").compute_table_schema()
+    assert schema["columns"]["payload"]["data_type"] == "json"
+    assert schema["columns"]["id"].get("x-bigquery-cluster") is True
+
+
+def test_bq_resource_requires_partition_or_cluster():
+    """With neither hint, dlt's adapter would erase the reflected column types."""
+
+    @dlt.resource(name="t")
+    def rows():
+        yield {"id": "a"}
+
+    with pytest.raises(ValueError):
+        bq_resource(rows())

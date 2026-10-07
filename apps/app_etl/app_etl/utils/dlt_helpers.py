@@ -51,8 +51,11 @@ def bq_resource(
 
     `partition` day-partitions on that column; `cluster` takes up to 4
     columns. BigQuery fixes both at table creation: changing either needs
-    one run with `--refresh`.
+    one run with `--refresh`. One of them is required: without either, the
+    adapter erases the column types `sql_table()` reflected.
     """
+    if partition is None and cluster is None:
+        raise ValueError("bq_resource needs partition or cluster")
     return bigquery_adapter(
         resource, autodetect_schema=True, partition=partition, cluster=cluster
     )
