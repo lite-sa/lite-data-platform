@@ -18,7 +18,13 @@
     pay = add_local_time(pay)                      # created_at -> created_at_local
     pay = json_get(pay, "instrument_data", "card_brand")
     pay = json_flatten(pay, "instrument_data")     # instrument_data_<key> columns
+    legs = json_explode(pay, "splits")             # one row per array element
     df = query("select count(*) n from {core}.payments")
+
+    # Row counts and sizes from table metadata, no scan.
+    tables("payment_v2")                              # raw_litecore
+    tables("payment_v2", dataset=["raw_litecore", "core"])  # raw vs mirror
+    datasets()
 
 start/end are business-local (Riyadh) days, end exclusive. Frames from
 core/latest/versions drop EXCLUDED_MERCHANT_IDS when the table has a
@@ -163,6 +169,51 @@ def latest(table: str, *, key: str = "id", **kwargs) -> pd.DataFrame | str:
 def versions(table: str, **kwargs) -> pd.DataFrame | str:
     """Raw table as landed: one row per extracted version, duplicates kept."""
     return _fetch(RAW_DATASET, table, **kwargs)
+
+
+def datasets(*, client: bigquery.Client | None = None) -> list[str]:
+    """Dataset names in the client's project."""
+    client = client or bq()
+    return sorted(d.dataset_id for d in client.list_datasets())
+
+
+# Type codes: 1 table, 2 view, 3 external. Views and external tables report 0
+# rows, so row_count is null for them.
+_TABLES_SQL = """select
+  '{dataset}' as dataset,
+  table_id as table_name,
+  case type when 1 then 'table' when 2 then 'view' else 'external' end as type,
+  if(type = 1, row_count, null) as row_count,
+  round(size_bytes / pow(1024, 2), 1) as size_mb,
+  datetime(timestamp_millis(last_modified_time), '{tz}') as last_modified_local
+from `{project}.{dataset}.__TABLES__`"""
+
+
+def tables(
+    prefix: str | None = None,
+    *,
+    dataset: str | Sequence[str] = RAW_DATASET,
+    sql_only: bool = False,
+    client: bigquery.Client | None = None,
+) -> pd.DataFrame | str:
+    """Tables with row counts, size and last-modified time, sorted by name.
+
+    prefix matches the start of the table name ("payment_v2"). dataset takes
+    one name or a list. Reads __TABLES__ metadata, so it scans no data. Raw
+    counts are versions, not distinct ids.
+    """
+    client = client or bq()
+    names = [dataset] if isinstance(dataset, str) else list(dataset)
+    parts = []
+    for name in names:
+        part = _TABLES_SQL.format(dataset=name, tz=LOCAL_TZ, project=client.project)
+        if prefix:
+            part += f"\nwhere starts_with(table_id, '{prefix}')"
+        parts.append(part)
+    sql = "\nunion all\n".join(parts) + "\norder by dataset, table_name"
+    if sql_only:
+        return sql
+    return client.query(sql).to_dataframe()
 
 
 def _fetch(
@@ -317,24 +368,59 @@ def json_get(
     return out
 
 
+def _parse_json(blob):
+    if isinstance(blob, str):
+        try:
+            return json.loads(blob)
+        except ValueError:
+            return None
+    return blob
+
+
+def _flat_items(blob, key: str):
+    if isinstance(blob, dict):
+        for k, v in blob.items():
+            yield from _flat_items(v, f"{key}_{k}")
+    elif isinstance(blob, list):
+        for i, v in enumerate(blob):
+            yield from _flat_items(v, f"{key}_{i}")
+    else:
+        yield key, blob
+
+
 def json_flatten(
     df: pd.DataFrame, col: str, *, prefix: str | None = None, drop: bool = False
 ) -> pd.DataFrame:
-    """Spread a JSON column into one column per key (nested keys joined by _)."""
+    """Spread a JSON column into one column per key (nested keys joined by _).
 
-    def parse(blob):
-        if isinstance(blob, str):
-            try:
-                blob = json.loads(blob)
-            except ValueError:
-                return {}
-        return blob if isinstance(blob, dict) else {}
-
-    flat = pd.json_normalize(df[col].map(parse).tolist(), sep="_")
-    flat.index = df.index
-    flat = flat.add_prefix(f"{prefix if prefix is not None else col}_")
+    List elements spread by position (splits_0_amount, splits_1_amount); use
+    json_explode for one row per element instead.
+    """
+    prefix = prefix if prefix is not None else col
+    rows = []
+    for blob in df[col]:
+        blob = _parse_json(blob)
+        rows.append(
+            dict(_flat_items(blob, prefix)) if isinstance(blob, (dict, list)) else {}
+        )
+    flat = pd.DataFrame(rows, index=df.index)
     out = df.drop(columns=col) if drop else df
     return pd.concat([out, flat], axis=1)
+
+
+def json_explode(
+    df: pd.DataFrame, col: str, *, prefix: str | None = None
+) -> pd.DataFrame:
+    """One row per element of a JSON array column, element keys as columns.
+
+    json_explode(pay, "splits") -> splits_amount, splits_account_reference, ...
+    Rows with a null or empty array stay as one row with null element columns.
+    The original index repeats per element.
+    """
+    out = df.copy()
+    out[col] = out[col].map(_parse_json)
+    out = out.explode(col)
+    return json_flatten(out, col, prefix=prefix, drop=True)
 
 
 __all__ = [
@@ -345,13 +431,16 @@ __all__ = [
     "add_merchant_name",
     "bq",
     "core",
+    "datasets",
     "days_ago",
+    "json_explode",
     "json_flatten",
     "json_get",
     "json_sql",
     "latest",
     "merchant_directory",
     "query",
+    "tables",
     "TEST_MERCHANT_IDS",
     "versions",
 ]
