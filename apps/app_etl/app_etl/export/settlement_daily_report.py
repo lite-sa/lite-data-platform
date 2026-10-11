@@ -183,7 +183,9 @@ def fetch_window_transactions(
     the payment, with the operation's `payment_id` as fallback
     (`payment_resolved_via_op`). A claw-back row resolves its operation
     through `original_operation_id` (suffix stripped) and joins the sale row
-    it mirrors (`original_*` columns; NULL on other rows).
+    it mirrors (`original_*` columns; NULL on other rows). `splits` names
+    the business accounts a split payment pays; each gets its own leg in
+    its own window.
 
     `end_day` widens to a collection-day range for one-off reports.
     `all_merchants=True` lifts the MERCHANTS allowlist.
@@ -256,6 +258,7 @@ def fetch_window_transactions(
             p.channel_id,
             p.channel_type,
             p.order_data,
+            p.splits,
             p.created_at,
             c.name as channel_name,
             cb.business_id as channel_merchant_id
@@ -517,6 +520,29 @@ def dedupe_settlement(settle: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return deduped, warnings
 
 
+def split_beneficiaries(splits: object) -> set[str]:
+    """Business account ids in a payment's `splits` JSON; empty when the
+    payment has none."""
+    if not isinstance(splits, str):
+        return set()
+    return {s.get("business_account_id") for s in json.loads(splits) or []}
+
+
+def is_split_leg(spine: pd.DataFrame) -> pd.Series:
+    """Row mask of legs booked to a split beneficiary's window rather than
+    the payment merchant's."""
+    return pd.Series(
+        [
+            window_mid != payment_mid and window_mid in split_beneficiaries(splits)
+            for window_mid, payment_mid, splits in zip(
+                spine["merchant_id"], spine["payment_merchant_id"], spine["splits"]
+            )
+        ],
+        index=spine.index,
+        dtype=bool,
+    )
+
+
 def is_reversal_adjustment(spine: pd.DataFrame) -> pd.Series:
     """Row mask of claw-back rows, from `operation` (NULL is never one)."""
     return spine["operation"].fillna("").str.lower().eq(REVERSAL_ADJUSTMENT)
@@ -577,10 +603,13 @@ def run_checks(spine: pd.DataFrame) -> list[str]:
             "payment for parent_payment_id (nor via the operation's payment_id)"
         )
 
-    # Tenant guards: the window's merchant must be the payment's, and a
-    # resolved channel must belong to the payment's merchant.
-    mismatch = spine["payment_resolved"] & (
-        spine["merchant_id"] != spine["payment_merchant_id"]
+    # Tenant guards: the window's merchant must be the payment's or one of
+    # its split beneficiaries, and a resolved channel must belong to the
+    # payment's merchant.
+    mismatch = (
+        spine["payment_resolved"]
+        & (spine["merchant_id"] != spine["payment_merchant_id"])
+        & ~is_split_leg(spine)
     )
     if mismatch.any():
         failures.append(
@@ -780,6 +809,15 @@ def informational_notes(spine: pd.DataFrame, day_ops: pd.DataFrame) -> list[str]
             f"{len(via_op)} row(s) with NULL parent_payment_id resolved "
             "through the operation's payment_id (upstream event lost the "
             f"payment id): {via_op[:5]}"
+        )
+    split_legs = sorted(
+        set(spine.loc[is_split_leg(spine), "settlement_transaction_id"])
+    )
+    if split_legs:
+        notes.append(
+            f"{len(split_legs)} split leg(s) booked to a beneficiary's window, "
+            "shipped under the beneficiary's merchant_id with the payer's "
+            f"payment columns: {split_legs[:5]}"
         )
     clawbacks = spine.loc[is_reversal_adjustment(spine)]
     if len(clawbacks):

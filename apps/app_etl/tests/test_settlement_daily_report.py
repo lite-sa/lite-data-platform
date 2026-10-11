@@ -2,9 +2,9 @@
 no BigQuery or GCS.
 
 Covers each gate check in run_checks, both waivers, the NULL
-parent_payment_id fallback, the claw-back row, the informational notes,
-build_report, the leftover payment-grain path, the file writers, and the
-parity guard for the incident exclusion list.
+parent_payment_id fallback, split legs, the claw-back row, the informational
+notes, build_report, the leftover payment-grain path, the file writers, and
+the parity guard for the incident exclusion list.
 """
 
 from __future__ import annotations
@@ -109,6 +109,7 @@ def _spine() -> pd.DataFrame:
             "channel_id": ["ch-1", "ch-1", None, "ch-1"],
             "channel_type": ["IN-PERSON"] * 4,
             "order_data": ['{"reference":"ord-1"}', '{"reference":"ord-1"}', None, None],
+            "splits": [None] * 4,
             "created_at": pd.to_datetime(
                 [P1_CREATED, P1_CREATED, P1_CREATED, P1_CREATED], utc=True
             ),
@@ -327,6 +328,28 @@ def test_checks_block_cross_tenant_and_foreign_currency():
         "USD"
     )
     assert any("non-SAR" in f for f in run_checks(foreign))
+
+
+def test_split_leg_to_a_beneficiary_window_passes_and_is_noted():
+    # A split payment books one leg per party, each in its party's window
+    # (first case 2026-10-07). A leg in a window of an account the payment
+    # names in `splits` passes the tenant guard; any other merchant blocks.
+    spine, _ = _prepared_spine()
+    leg = spine.copy()
+    t1 = leg["settlement_transaction_id"] == "t1"
+    leg.loc[t1, "merchant_id"] = M2
+    leg.loc[t1, "splits"] = (
+        f'[{{"amount":600,"account_reference":"main","business_account_id":"{M2}"}}]'
+    )
+    assert run_checks(leg) == []
+    notes = "\n".join(informational_notes(leg, _day_ops()))
+    assert "1 split leg(s) booked to a beneficiary's window" in notes
+    assert "['t1']" in notes
+
+    other = leg.copy()
+    other.loc[other["settlement_transaction_id"] == "t1", "merchant_id"] = "merchant-3"
+    assert any("window merchant" in f for f in run_checks(other))
+    assert not any("split leg" in n for n in informational_notes(spine, _day_ops()))
 
 
 def test_checks_block_amount_and_sign_violations():

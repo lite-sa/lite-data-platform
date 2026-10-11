@@ -82,6 +82,18 @@ def test_latest_without_updated_at_orders_by_load():
     assert "partition by id order by _dlt_load_id desc" in sql
 
 
+def test_tables_unions_datasets_and_filters_prefix():
+    sql = nb.tables(
+        "payment_v2", dataset=["raw_litecore", "core"], sql_only=True, client=CLIENT
+    )
+    raw, core = sql.split("\nunion all\n")
+    assert "`lite-data-prod.raw_litecore.__TABLES__`" in raw
+    assert "`lite-data-prod.core.__TABLES__`" in core
+    assert sql.count("starts_with(table_id, 'payment_v2')") == 2
+    assert sql.endswith("order by dataset, table_name")
+    assert "where" not in nb.tables(sql_only=True, client=CLIENT)
+
+
 def test_add_local_time_inserts_next_to_source():
     df = pd.DataFrame(
         {"created_at": pd.to_datetime(["2026-09-30 22:00"], utc=True), "x": [1]}
@@ -104,6 +116,23 @@ def test_json_flatten_and_sql():
     df = pd.DataFrame({"blob": ['{"a": {"b": 1}, "c": "z"}', None]})
     out = nb.json_flatten(df, "blob", drop=True)
     assert sorted(out.columns) == ["blob_a_b", "blob_c"]
+    arr = pd.DataFrame({"splits": ['[{"amount": 20, "ref": "tips"}, {"amount": 5}]']})
+    assert list(nb.json_flatten(arr, "splits", drop=True).columns) == [
+        "splits_0_amount",
+        "splits_0_ref",
+        "splits_1_amount",
+    ]
     assert nb.json_sql("instrument_data", "card_brand") == (
         "json_value(instrument_data, '$.card_brand') as card_brand"
     )
+
+
+def test_json_explode_one_row_per_element():
+    df = pd.DataFrame(
+        {"id": ["a", "b"], "splits": ['[{"amount": 20}, {"amount": 5}]', None]}
+    )
+    out = nb.json_explode(df, "splits")
+    assert list(out.columns) == ["id", "splits_amount"]
+    assert out["id"].tolist() == ["a", "a", "b"]
+    assert out["splits_amount"].iloc[:2].tolist() == [20, 5]
+    assert pd.isna(out["splits_amount"].iloc[2])
