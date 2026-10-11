@@ -38,8 +38,8 @@ models:
         columns: true
     # The litecore mirror: one table per raw table of the payment_v2,
     # ledger, settlement, checkout_session, payout, business_management,
-    # pricing_engine, smart_routing and terminal_management databases, latest version per id,
-    # PII columns removed. Builds into BQ_DATASET_CORE like
+    # pricing_engine, smart_routing, terminal_management, user, iam and lem
+    # databases, latest version per id, PII columns removed or masked. Builds into BQ_DATASET_CORE like
     # everything else: Metabase can read `core` only.
     litecore:
       +materialized: table

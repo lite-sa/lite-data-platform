@@ -1,6 +1,7 @@
 # Docs and tests for the litecore mirror: the payment_v2, ledger,
 # settlement, checkout_session, payout, business_management, pricing_engine,
-# smart_routing and terminal_management raw tables, PII columns removed, built into the core
+# smart_routing, terminal_management, user, iam and lem raw tables, PII
+# columns removed or masked, built into the core
 # dataset next to the marts. Every description here lands on
 # the BigQuery table or column (persist_docs) and Metabase shows it, so:
 # short, plain, under 1,024 characters (tests/test_dbt_docs.py). Each table
@@ -1283,3 +1284,356 @@ models:
         description: Last update at source, UTC. Heartbeats bump it.
       - name: deleted_at
         description: Soft delete, the day the terminal was pulled out, UTC. NULL while in service.
+
+  - name: user__users
+    description: >
+      Redacted copy of LiteCore user.users, one row per merchant-portal
+      user. Removed columns: phone_number, full_name, last_login_lat and
+      last_login_long. The user service reloads in full every run: current
+      state only, no history. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The user id (uuid). user__merchants_users.user_id references it.
+        tests: [not_null, unique]
+      - name: user_id
+        description: The user's id at the identity provider. Matches no iam id.
+      - name: user_type
+        description: Merchant on every row so far.
+      - name: status
+        description: >
+          Active, Pending Phone Verification, Pending Accept Invitation or
+          Suspended (deleted users).
+      - name: phone_number_verified
+        description: The phone number passed OTP verification.
+      - name: failed_login_attempts
+        description: Failed login attempts counted by the service.
+      - name: is_locked
+        description: The account is locked after failed logins.
+      - name: locked_at
+        description: When the lock started, UTC.
+      - name: last_login_at
+        description: Last successful login, UTC. NULL means never logged in.
+      - name: last_login_country
+        description: ISO country code of the last login.
+      - name: kyc_status
+        description: >
+          Identity check state: Not Required (invited team members),
+          Completed, Not started, or a failure such as Phone ownership
+          validation failed.
+      - name: kyc_completed_at
+        description: When KYC completed, UTC. NULL on some Completed rows.
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: deleted_at
+        description: Soft delete, UTC.
+      - name: created_at
+        description: Registration, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: user__merchants
+    description: >
+      Copy of LiteCore user.merchants, the user service's record of each
+      merchant, one row per id. Removed column: name (mostly blank; use
+      business_management__business_entities.name). merchant_id is the key
+      the rest of core uses; id is internal to the user service. Test
+      merchants are included, filter with core.test_merchants. Current
+      state only. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: >
+          The user-service merchant id (uuid). user__merchants_users and
+          user__user_invitations reference it. Not payments.merchant_id.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: >
+          The merchant's business_id: joins payments.merchant_id and
+          business_management__business_entities.business_id.
+      - name: status
+        description: Not Started or KYB approved.
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: deleted_at
+        description: Soft delete, UTC.
+      - name: created_at
+        description: Registration, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: user__merchants_users
+    description: >
+      Copy of LiteCore user.merchants_users, one row per seat: a user's
+      membership of a merchant team, with its role. No column removed.
+      merchant_id is user__merchants.id, not the business_id: join through
+      user__merchants. Seats held by Lite staff are included. Current state
+      only. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The seat id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The merchant team (user__merchants.id).
+      - name: user_id
+        description: The seat holder (user__users.id).
+      - name: role_id
+        description: The seat's role (uuid). Role names are not loaded yet.
+      - name: status
+        description: Active, Pending or Suspended.
+      - name: email
+        description: The seat holder's email address.
+      - name: email_verified
+        description: The email passed verification.
+      - name: created_by
+        description: The user who created the seat (user__users.id).
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: deleted_by
+        description: The user who removed the seat (user__users.id). NULL on every row so far.
+      - name: deleted_at
+        description: Soft delete, UTC.
+      - name: created_at
+        description: Seat creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: user__user_invitations
+    description: >
+      Redacted copy of LiteCore user.user_invitations, one row per
+      invitation to join a merchant team. Removed column: token (a secret).
+      used means closed (accepted or revoked), not accepted. For funnels use
+      state, which marks pending invitations past expires_at as expired.
+      Current state only. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The invitation id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The merchant team (user__merchants.id).
+      - name: user_id
+        description: The invited user (user__users.id).
+      - name: status
+        description: accepted, pending or revoked, as stored. Stays pending after expiry.
+      - name: used
+        description: True once the invitation closed, accepted or revoked.
+      - name: expires_at
+        description: When the invitation expires, UTC.
+      - name: created_at
+        description: When the invitation was sent, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+      - name: state
+        description: >
+          status, with expired for a pending invitation past expires_at at
+          build time: accepted, pending, expired or revoked.
+
+  - name: user__users_info
+    description: >
+      Flags-only copy of LiteCore user.users_info, the identity record of
+      merchant users who went through KYC, one row per user. The national
+      id and Hijri birth date pass masked; the rest is reduced to has_*
+      flags. Removed columns: national_id, higri_birth_date (masked
+      instead), national_address, focal_query_uuid, id_expiration_date and
+      the five yakeen_* name columns. Current state only. Rebuilt five
+      times a day.
+    columns:
+      - name: id
+        description: The row id (uuid).
+        tests: [not_null, unique]
+      - name: user_id
+        description: The user (user__users.id). One row per user.
+      - name: created_at
+        description: When KYC data was first stored, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+      - name: national_id_masked
+        description: >
+          National ID or Iqama number, masked: the first two and last two
+          digits kept, a star for each digit between.
+      - name: hijri_birth_date_masked
+        description: >
+          Hijri birth date, masked: the first two characters and the last
+          one kept, a star for each character between.
+      - name: has_national_id
+        description: A national ID or Iqama number is on file.
+      - name: has_national_address
+        description: A national address was fetched.
+      - name: has_focal_screening
+        description: A Focal screening query is on file.
+
+  - name: iam__identities
+    description: >
+      Copy of LiteCore iam.identities, one row per identity: a person (type
+      user, details in iam__users) or a service (type server). No column
+      removed. iam shares no ids with the user tables. Current state only.
+      Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The identity id (uuid).
+        tests: [not_null, unique]
+      - name: type
+        description: user or server.
+      - name: status
+        description: active on every row so far.
+      - name: created_at
+        description: Identity creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+      - name: deleted_at
+        description: Soft delete, UTC.
+
+  - name: iam__users
+    description: >
+      Redacted copy of LiteCore iam.users, one row per person identity (id
+      = iam__identities.id). Removed columns: national_id and
+      hijri_birth_date (masked instead), yakeen_data (reduced to a flag),
+      email, phone_number, full_name, national_address, last_login_lat,
+      last_login_long, metadata and zitadel_user_id. Current state only.
+      Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The identity id (uuid, iam__identities.id).
+        tests: [not_null, unique]
+      - name: kyc_status
+        description: not_required or completed.
+      - name: is_phone_verified
+        description: The phone number is verified.
+      - name: is_email_verified
+        description: The email address is verified.
+      - name: last_login_country
+        description: ISO country code of the last login. NULL on every row so far.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+      - name: national_id_masked
+        description: >
+          National ID or Iqama number, masked: the first two and last two
+          digits kept, a star for each digit between.
+      - name: hijri_birth_date_masked
+        description: >
+          Hijri birth date, masked: the first two characters and the last
+          one kept, a star for each character between.
+      - name: has_national_id
+        description: A national ID or Iqama number is on file.
+      - name: has_yakeen_data
+        description: A Yakeen identity record was fetched.
+
+  - name: iam__user_assignments
+    description: >
+      Copy of LiteCore iam.user_assignments, one row per role grant: an
+      identity's role on a lem resource. No column removed. Removing a role
+      deletes its row at source, so this table holds current grants only.
+      Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The grant id (uuid).
+        tests: [not_null, unique]
+      - name: identity_id
+        description: The grantee (iam__identities.id).
+      - name: resource_type
+        description: The kind of lem resource. organization on every row so far.
+      - name: resource_id
+        description: The lem resource, for example lem__organizations.id.
+      - name: role
+        description: owner or admin.
+      - name: created_at
+        description: Grant creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: lem__organizations
+    description: >
+      Copy of LiteCore lem.organizations, the top of the lem hierarchy:
+      organization, then legal entities and business units, then business
+      accounts. One row per id. No column removed. lem replaces
+      business_management for new merchants and shares no ids with it. lem
+      is not on the load schedule yet, so rows can be days behind the
+      source. Current state only.
+    columns:
+      - name: id
+        description: The organization id (uuid).
+        tests: [not_null, unique]
+      - name: name
+        description: Organization name. Often blank.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: lem__legal_entities
+    description: >
+      Redacted copy of LiteCore lem.legal_entities, the registered
+      companies of a lem organization, one row per id. Removed columns:
+      contact_phone_number, contact_mobile_number and contact_email. lem is
+      not on the load schedule yet, so rows can be days behind the source.
+      Current state only.
+    columns:
+      - name: id
+        description: The legal entity id (uuid).
+        tests: [not_null, unique]
+      - name: organization_id
+        description: The owning organization (lem__organizations.id).
+      - name: legal_name
+        description: Registered name. Often blank.
+      - name: registration_number
+        description: Registration number as entered, normally the commercial registration (CR).
+      - name: country_code
+        description: Country of registration. NULL on every row so far.
+      - name: website_url
+        description: Website as entered.
+      - name: kyb_approved_at
+        description: KYB approval, UTC. NULL on every row so far.
+      - name: status
+        description: created or confirmed.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: lem__business_units
+    description: >
+      Copy of LiteCore lem.business_units, the operating units of a lem
+      organization, one row per id. No column removed. lem is not on the
+      load schedule yet, so rows can be days behind the source. Current
+      state only.
+    columns:
+      - name: id
+        description: The business unit id (uuid).
+        tests: [not_null, unique]
+      - name: organization_id
+        description: The owning organization (lem__organizations.id).
+      - name: name
+        description: Unit name. Often blank.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: lem__business_accounts
+    description: >
+      Copy of LiteCore lem.business_accounts, one row per business account.
+      A lem-onboarded merchant's payments carry this id as
+      payments.merchant_id, and payment splits name it as
+      business_account_id. No column removed. lem is not on the load
+      schedule yet, so rows can be days behind the source. Current state
+      only.
+    columns:
+      - name: id
+        description: The business account id (uuid). payments.merchant_id for lem merchants.
+        tests: [not_null, unique]
+      - name: business_unit_id
+        description: The owning unit (lem__business_units.id).
+      - name: legal_entity_id
+        description: The contracting company (lem__legal_entities.id).
+      - name: name
+        description: Account name.
+      - name: operation_mode
+        description: DIRECT or MARKETPLACE.
+      - name: operation_role
+        description: NULL on every row so far.
+      - name: status
+        description: INACTIVE on every row so far, including accounts taking payments.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.

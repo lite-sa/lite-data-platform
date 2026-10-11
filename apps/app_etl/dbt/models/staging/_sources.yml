@@ -174,3 +174,36 @@ sources:
           terminal per run; dedup to the latest per terminal_id.
           payment_operations.terminal_id -> tid. vendor_jwt,
           encrypted_secret_key, trsm and user_phone are the trim map.
+      # Declared 2026-10-11 for the litecore mirror; no staging view reads them.
+      # All `replace` (full reload each run, no history). PII-dense: the
+      # mirror models hold the allowlists.
+      - name: user__users
+        description: Merchant-portal logins. user_id is the identity-provider id.
+      - name: user__merchants
+        description: >
+          The user service's merchants. merchant_id = business_id =
+          payments.merchant_id; id is user-service internal.
+      - name: user__merchants_users
+        description: Team seats; merchant_id -> user__merchants.id, user_id -> user__users.id.
+      - name: user__user_invitations
+        description: Team invitations. token is a plaintext bearer secret (trim map).
+      - name: user__users_info
+        description: KYC identity record per user (national id, Yakeen names, address).
+      - name: iam__identities
+        description: iam identities, type user or server.
+      - name: iam__users
+        description: Person identities; id = identities.id. yakeen_data is the full Yakeen payload.
+      - name: iam__user_assignments
+        description: >
+          Role grants of an identity on a lem resource. Hard-deleted on role
+          removal at source.
+      - name: lem__organizations
+        description: Top of the lem hierarchy.
+      - name: lem__legal_entities
+        description: Registered companies of an organization; contact_* are the trim map.
+      - name: lem__business_units
+        description: Business units of an organization.
+      - name: lem__business_accounts
+        description: >
+          The lem merchant key: payments.merchant_id of a lem-onboarded
+          merchant and the business_account_id in payment splits.
