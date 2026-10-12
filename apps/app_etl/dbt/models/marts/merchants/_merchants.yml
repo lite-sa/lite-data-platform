@@ -1,0 +1,81 @@
+# Every description here lands on the BigQuery table or column
+# (persist_docs) and Metabase shows it: short, plain, under 1,024
+# characters (tests/test_dbt_docs.py).
+version: 2
+
+models:
+  - name: merchants
+    description: >
+      One row per merchant, from both onboarding systems: business
+      management and lem (legal entity management). merchant_id is what
+      payments, settlement windows and ledger accounts call the merchant.
+      Join on merchant_id to add a merchant's name to any table. Rebuilt
+      in full on every run; names are the current ones.
+    columns:
+      - name: merchant_id
+        description: >
+          Grain. A business management business_id or a lem business
+          account id.
+        tests: [not_null, unique]
+      - name: merchant_name
+        description: >
+          Business management display name, or the lem legal entity's
+          legal name. NULL when the source has no name yet.
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: source_system
+        description: Where the merchant was onboarded, business_management or lem.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [business_management, lem]
+      - name: legal_entity_id
+        description: >
+          The lem legal entity that holds the account. Several accounts can
+          share one, and lem wallets (ledger owner_type LEGAL_ENTITY) belong
+          to it. NULL for business management merchants.
+      - name: business_unit_name
+        description: The lem business unit's name. NULL for business management merchants.
+      - name: business_account_name
+        description: >
+          The lem business account's name, for example Main. One legal
+          entity can hold several accounts. NULL for business management
+          merchants.
+      - name: status
+        description: >
+          Status as at the source: the business management onboarding
+          status, or the lem business account status (ACTIVE, INACTIVE).
+      - name: is_test
+        description: An internal test merchant (test_merchants seed).
+        tests: [not_null]
+      - name: is_deleted
+        description: Soft-deleted in business management, or hard-deleted at source.
+        tests: [not_null]
+      - name: created_at
+        description: When the business entity or the lem business account was created.
+
+  - name: merchant_channels
+    description: >
+      One row per sales channel (store, ecom API, hosted checkout, payment
+      link) from both onboarding systems, with the merchant that owns it.
+      payments.channel_id joins channel_id. Rebuilt in full on every run.
+    columns:
+      - name: channel_id
+        description: Grain. The channel id payments carry.
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The owning merchant (merchants.merchant_id).
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: channel_name
+        description: The channel's display name.
+      - name: source_system
+        description: Where the channel lives, business_management or lem.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [business_management, lem]

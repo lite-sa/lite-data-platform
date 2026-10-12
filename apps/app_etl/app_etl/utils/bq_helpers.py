@@ -33,7 +33,8 @@ returns the SQL instead of running it. Everything defaults to prod; pass
 client=bq("lite-data-dev") for dev.
 
     settlement_overview = add_merchant_name(settlement_overview, client)
-    payments_named = add_merchant_name(payments, client, cols=("name", "cr_national_number"))
+    windows = add_merchant_name(windows, client,
+                                cols=("merchant_name", "business_account_name"))
 """
 
 from __future__ import annotations
@@ -67,18 +68,9 @@ DELETED_MERCHANT_IDS = [
 # Exclude these from every analysis frame.
 EXCLUDED_MERCHANT_IDS = TEST_MERCHANT_IDS + DELETED_MERCHANT_IDS
 
-# One row per business_id, latest version. business_id (not id, the source PK)
-# is the natural key the payment/settlement tables reference as merchant_id —
-# see ingestion/business_management.py. The dedup is a no-op under the current
-# replace disposition; it becomes load-bearing once snapshot history accumulates.
-_MERCHANT_SQL = """
-select business_id, name, cr_national_number, status
-from `{project}.raw_litecore.business_management__business_entities`
-where business_id is not null
-qualify row_number() over (
-    partition by business_id order by updated_at desc, _dlt_load_id desc
-) = 1
-"""
+# The dbt merchants registry: one row per merchant_id across business_management
+# and lem.
+_MERCHANT_SQL = "select * from `{project}.{dataset}.merchants`"
 
 _merchant_cache: dict[str, pd.DataFrame] = {}
 
@@ -86,11 +78,11 @@ _merchant_cache: dict[str, pd.DataFrame] = {}
 def merchant_directory(
     client: bigquery.Client, *, refresh: bool = False
 ) -> pd.DataFrame:
-    """Latest business entity per business_id, cached per project for the kernel session."""
+    """core.merchants, cached per project for the kernel session."""
     project = client.project
     if refresh or project not in _merchant_cache:
         _merchant_cache[project] = client.query(
-            _MERCHANT_SQL.format(project=project)
+            _MERCHANT_SQL.format(project=project, dataset=CORE_DATASET)
         ).to_dataframe()
     return _merchant_cache[project]
 
@@ -100,26 +92,15 @@ def add_merchant_name(
     client: bigquery.Client,
     *,
     on: str = "merchant_id",
-    cols: Sequence[str] = ("name",),
+    cols: Sequence[str] = ("merchant_name",),
     refresh: bool = False,
 ) -> pd.DataFrame:
-    """Left-join merchant attributes onto any frame with a merchant_id column.
-
-    Joined columns arrive prefixed (name -> merchant_name) so they never
-    collide with payment/window columns like status. validate="m:1" makes a
-    fan-out (duplicate business_id in the directory) fail loudly instead of
-    silently multiplying rows.
+    """Left-join core.merchants columns onto a frame whose `on` column holds
+    a merchant id. validate="m:1" fails loudly on a fan-out.
     """
     directory = merchant_directory(client, refresh=refresh)
-    lookup = directory[["business_id", *cols]].rename(
-        columns={c: f"merchant_{c}" for c in cols}
-    )
-    merged = df.merge(
-        lookup, how="left", left_on=on, right_on="business_id", validate="m:1"
-    )
-    if on != "business_id":
-        merged = merged.drop(columns="business_id")
-    return merged
+    lookup = directory[["merchant_id", *cols]].rename(columns={"merchant_id": on})
+    return df.merge(lookup, how="left", on=on, validate="m:1")
 
 
 # --- Fetching ---------------------------------------------------------------

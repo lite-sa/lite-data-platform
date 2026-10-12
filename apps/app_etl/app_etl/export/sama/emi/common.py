@@ -3,24 +3,35 @@ rule, per-wallet activity and wallet payouts with their rail.
 """
 
 from app_etl.export.common import merchant_directory
-from app_etl.export.sama.common import RAW, lv, not_deleted
+from app_etl.export.sama.common import CORE, lv, not_deleted
 
 # ANB routes a payout below this amount (halalas) on IPS, the rest on SARIE.
 IPS_LIMIT_MINOR = 2_000_000
 
+
+# A lem wallet belongs to the legal entity (owner_type LEGAL_ENTITY), whose
+# accounts all carry its legal name.
+LEGAL_ENTITY_NAMES = f"""(
+    select legal_entity_id, any_value(merchant_name) as merchant_name
+    from {merchant_directory(CORE)}
+    where legal_entity_id is not null
+    group by legal_entity_id
+)"""
 
 # E-money population: ledger accounts tagged WALLET that existed at month end.
 WALLETS = f"""(
     select
         a.id as account_id,
         a.owner as merchant_id,
-        be.name as merchant_name,
+        coalesce(be.merchant_name, le.merchant_name) as merchant_name,
         a.owner_type,
         a.status as account_status,
         coalesce(a.owner in unnest(@test_ids), false) as is_test,
         a.created_at as account_created_at
     from {lv("ledger__account")} as a
-    left join {merchant_directory(RAW)} as be on be.business_id = a.owner
+    left join {merchant_directory(CORE)} as be on be.merchant_id = a.owner
+    left join {LEGAL_ENTITY_NAMES} as le
+        on a.owner_type = 'LEGAL_ENTITY' and le.legal_entity_id = a.owner
     where a.tag = 'WALLET'
       and date(a.created_at, @tz) <= @month_end
       and {not_deleted("a.owner")}

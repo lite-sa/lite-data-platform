@@ -16,8 +16,9 @@
 --
 -- Test merchants, merchants hard-deleted at source and incident-remediated
 -- payments are excluded through the test_merchants, deleted_merchants and
--- incident_excluded_payments seeds. Reads only staging
--- views: a new column goes into a staging view first.
+-- incident_excluded_payments seeds. Reads the staging views, plus the
+-- merchants registry for merchant_name: a new source column goes into a
+-- staging view first.
 --
 -- Decision contract: the decision op family is AUTHORIZE on ecom and
 -- AUTHORIZE + CAPTURE on POS (a POS sale persists as a CAPTURE op with no
@@ -170,9 +171,7 @@ with
             coalesce(op_flags.n_pending_ops, 0) as n_pending_ops,
             coalesce(op_flags.n_unknown_op_types, 0) as n_unknown_op_types
         from spine
-        left join
-            {{ ref('stg_litecore__business_entities') }} as merchants
-            on spine.merchant_id = merchants.merchant_id
+        left join {{ ref('merchants') }} as merchants on spine.merchant_id = merchants.merchant_id
         left join op_flags on spine.payment_id = op_flags.payment_id
         left join threeds on spine.payment_id = threeds.payment_id
 

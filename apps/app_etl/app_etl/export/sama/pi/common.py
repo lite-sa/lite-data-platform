@@ -3,7 +3,7 @@ terminal inventory and the authorized payments.
 """
 
 from app_etl.export.common import merchant_directory
-from app_etl.export.sama.common import RAW, lv, not_deleted, scheme_corrections
+from app_etl.export.sama.common import CORE, RAW, lv, not_deleted, scheme_corrections
 
 # Merchants with KYB approved on or before month end; each one gets an
 # ECOM account at approval. status holds the current state only. Manually
@@ -30,7 +30,7 @@ TERMINALS = f"""(
         t.terminal_id,
         t.tid,
         t.merchant_id,
-        be.name as merchant_name,
+        be.merchant_name,
         coalesce(t.merchant_id in unnest(@test_ids), false) as is_test,
         t.terminal_type,
         t.status as terminal_status,
@@ -44,7 +44,7 @@ TERMINALS = f"""(
             partition by terminal_id order by updated_at desc, _dlt_load_id desc
         ) = 1
     ) as t
-    left join {merchant_directory(RAW)} as be on be.business_id = t.merchant_id
+    left join {merchant_directory(CORE)} as be on be.merchant_id = t.merchant_id
     where date(t.created_at, @tz) <= @month_end
       and coalesce(date(t.deleted_at, @tz) >= @month_start, true)
       and {not_deleted("t.merchant_id")}
@@ -161,7 +161,7 @@ AUTHORIZED_PAYMENTS = f"""(
         p.payment_id,
         p.merchant_id,
         p.status as payment_status,
-        be.name as merchant_name,
+        be.merchant_name,
         coalesce(p.merchant_id in unnest(@test_ids), false) as is_test,
         c.channel,
         s.tid,
@@ -178,7 +178,7 @@ AUTHORIZED_PAYMENTS = f"""(
     join decision as k using (payment_id)
     join scheme as g using (payment_id)
     left join pos_ops as s using (payment_id)
-    left join {merchant_directory(RAW)} as be on be.business_id = p.merchant_id
+    left join {merchant_directory(CORE)} as be on be.merchant_id = p.merchant_id
     where date(k.authorized_at, @tz) between @month_start and @month_end
 )"""
 

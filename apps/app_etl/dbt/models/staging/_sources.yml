@@ -207,3 +207,7 @@ sources:
         description: >
           The lem merchant key: payments.merchant_id of a lem-onboarded
           merchant and the business_account_id in payment splits.
+      - name: lem__channels
+        description: >
+          Sales channels of a lem business account. Absent from raw until
+          the first row lands; merchant_channels checks before reading.

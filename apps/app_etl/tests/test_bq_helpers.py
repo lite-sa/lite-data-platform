@@ -136,3 +136,21 @@ def test_json_explode_one_row_per_element():
     assert out["id"].tolist() == ["a", "a", "b"]
     assert out["splits_amount"].iloc[:2].tolist() == [20, 5]
     assert pd.isna(out["splits_amount"].iloc[2])
+
+
+def test_add_merchant_name_joins_the_registry_on_any_id_column(monkeypatch):
+    registry = pd.DataFrame(
+        {
+            "merchant_id": ["bms-1", "lem-1"],
+            "merchant_name": ["Shop", "Legal Co"],
+            "business_account_name": [None, "Main"],
+        }
+    )
+    monkeypatch.setitem(nb._merchant_cache, CLIENT.project, registry)
+    wallets = pd.DataFrame({"owner": ["lem-1", "bms-1", "unknown"], "n": [1, 2, 3]})
+    out = nb.add_merchant_name(
+        wallets, CLIENT, on="owner", cols=("merchant_name", "business_account_name")
+    )
+    assert list(out.columns) == ["owner", "n", "merchant_name", "business_account_name"]
+    assert out["merchant_name"].tolist()[:2] == ["Legal Co", "Shop"]
+    assert pd.isna(out["merchant_name"].iloc[2])

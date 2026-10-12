@@ -36,6 +36,7 @@ from app_etl.export.common import (
     LOCAL_TIMEZONE,
     latest_version,
     make_arg_parser,
+    merchant_channels,
     merchant_directory,
     require_fresh_extraction,
     resolve_days,
@@ -170,6 +171,7 @@ def merchant_slug(name: str, merchant_id: str) -> str:
 def fetch_window_transactions(
     client: bigquery.Client,
     raw: str,
+    core: str,
     report_day: date,
     end_day: date | None = None,
     all_merchants: bool = False,
@@ -187,6 +189,7 @@ def fetch_window_transactions(
     the business accounts a split payment pays; each gets its own leg in
     its own window.
 
+    Merchant and channel names come from the dbt registry in `core`.
     `end_day` widens to a collection-day range for one-off reports.
     `all_merchants=True` lifts the MERCHANTS allowlist.
     """
@@ -240,7 +243,7 @@ def fetch_window_transactions(
             date(datetime(t.created_at, @tz))
                 <> coalesce(w.collection_date, date(datetime(w.created_at, @tz)))
                 as moved_across_days,
-            b.name as merchant_name,
+            b.merchant_name,
             o.id is not null as op_resolved,
             p.id is not null as payment_resolved,
             t.parent_payment_id is null and p.id is not null
@@ -260,13 +263,13 @@ def fetch_window_transactions(
             p.order_data,
             p.splits,
             p.created_at,
-            c.name as channel_name,
-            cb.business_id as channel_merchant_id
+            c.channel_name,
+            c.merchant_id as channel_merchant_id
         from txn t
         join {latest_version(f"{raw}.settlement__settlement_window")} w
             on w.id = t.settlement_window_id
-        left join {merchant_directory(raw)} b
-            on b.business_id = w.merchant_id
+        left join {merchant_directory(core)} b
+            on b.merchant_id = w.merchant_id
         left join {latest_version(f"{raw}.payment_v2__payment_operations")} o
             on o.id = t.original_operation_id
         left join original orig
@@ -274,10 +277,8 @@ def fetch_window_transactions(
             and orig.external_reference_id = t.original_operation_id
         left join {latest_version(f"{raw}.payment_v2__payments")} p
             on p.id = coalesce(t.parent_payment_id, o.payment_id)
-        left join {latest_version(f"{raw}.business_management__channels")} c
-            on c.id = p.channel_id
-        left join {latest_version(f"{raw}.business_management__business_entities")} cb
-            on cb.id = c.business_id
+        left join {merchant_channels(core)} c
+            on c.channel_id = p.channel_id
         where coalesce(w.collection_date, date(datetime(w.created_at, @tz)))
               between @report_day and @end_day
           and (@all_merchants or w.merchant_id in unnest(@merchant_ids))
@@ -304,6 +305,7 @@ def fetch_window_transactions(
 def fetch_payments(
     client: bigquery.Client,
     raw: str,
+    core: str,
     report_day: date,
     end_day: date | None = None,
     all_merchants: bool = False,
@@ -317,16 +319,14 @@ def fetch_payments(
     query = f"""
         select
             p.* except (_dlt_load_id, _dlt_id),
-            b.name as merchant_name,
-            c.name as channel_name,
-            cb.business_id as channel_merchant_id
+            b.merchant_name,
+            c.channel_name,
+            c.merchant_id as channel_merchant_id
         from {latest_version(f"{raw}.payment_v2__payments")} p
-        left join {merchant_directory(raw)} b
-            on b.business_id = p.merchant_id
-        left join {latest_version(f"{raw}.business_management__channels")} c
-            on c.id = p.channel_id
-        left join {latest_version(f"{raw}.business_management__business_entities")} cb
-            on cb.id = c.business_id
+        left join {merchant_directory(core)} b
+            on b.merchant_id = p.merchant_id
+        left join {merchant_channels(core)} c
+            on c.channel_id = p.channel_id
         where (@all_merchants or p.merchant_id in unnest(@merchant_ids))
           and p.id not in unnest(@excluded_payment_ids)
           and date(datetime(p.created_at, @tz)) between @report_day and @end_day
@@ -1057,10 +1057,11 @@ def main(argv: list[str] | None = None) -> None:
     # policy rejects.
     client = bigquery.Client(project=settings.gcp_project, location="me-central2")
     raw = f"{settings.gcp_project}.{settings.bq_dataset_raw}"
+    core = f"{settings.gcp_project}.{settings.bq_dataset_core}"
     require_fresh_extraction(client, raw, report_day)
 
     spine = fetch_window_transactions(
-        client, raw, report_day, all_merchants=args.all_merchants
+        client, raw, core, report_day, all_merchants=args.all_merchants
     )
     spine = derive_adjustment_fees(spine)
     spine, fee_cols = pivot_fees_txn(spine)
@@ -1069,7 +1070,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     # Payments the settlement spine does not cover ship payment-grain.
     payments = fetch_payments(
-        client, raw, report_day, all_merchants=args.all_merchants
+        client, raw, core, report_day, all_merchants=args.all_merchants
     )
     empty_settle, _ = pivot_fees(_empty_settlement())
     empty_settle, _ = dedupe_settlement(empty_settle)

@@ -45,18 +45,18 @@ def latest_version(table_fqn: str) -> str:
         )"""
 
 
-def merchant_directory(raw: str) -> str:
-    """Subquery for the latest business entity per `business_id`, the key
-    payment tables reference as merchant_id (not the PK `id`).
+def merchant_directory(core: str) -> str:
+    """The dbt merchants registry: one row per merchant_id across
+    business_management and lem, with merchant_name.
     """
-    return f"""(
-            select business_id, name
-            from `{raw}.business_management__business_entities`
-            where business_id is not null
-            qualify row_number() over (
-                partition by business_id order by updated_at desc, _dlt_load_id desc
-            ) = 1
-        )"""
+    return f"`{core}.merchants`"
+
+
+def merchant_channels(core: str) -> str:
+    """The dbt merchant_channels table: channel_id, channel_name and the
+    owning merchant_id, across business_management and lem.
+    """
+    return f"`{core}.merchant_channels`"
 
 
 def make_arg_parser(description: str) -> argparse.ArgumentParser:

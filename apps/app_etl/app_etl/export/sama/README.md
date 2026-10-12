@@ -172,9 +172,9 @@ report month. The terminal's own `status` plays no part.
 **Check column** `active_without_terminal`: active merchants with no
 terminal in the inventory. It should be 0.
 
-`business_entities` does not filter POS merchants. It supplies the name
-only, through a left join on `business_id = merchant_id`. KYB status and
-soft deletes are never checked here.
+The merchant registry `core.merchants` does not filter POS merchants. It
+supplies the name only, through a left join on `merchant_id`. KYB status
+and soft deletes are never checked here.
 
 ### I.3 SADAD billers
 
@@ -245,7 +245,9 @@ where a.tag = 'WALLET'
 ```
 
 The merchant is `ledger__account.owner`. Account `status` does not filter
-wallets; every wallet in prod is `ACTIVE`.
+wallets; every wallet in prod is `ACTIVE`. A lem merchant's wallet is owned
+by its legal entity (`owner_type = 'LEGAL_ENTITY'`), so its name comes from
+`core.merchants.legal_entity_id`, not `merchant_id`.
 
 ### Money movement
 

@@ -18,12 +18,12 @@ models:
         description: Grain. The LiteCore payment id.
         tests: [not_null, unique]
       - name: merchant_id
-        description: The merchant (business_entities.business_id).
+        description: The merchant (merchants.merchant_id).
         tests: [not_null]
       - name: merchant_name
         description: >
-          Merchant display name. NULL when the merchant snapshot lags a
-          newly onboarded merchant; group by merchant_id as well.
+          Merchant name from the merchants table, the current one. NULL
+          when the merchant has no name yet; group by merchant_id.
         tests:
           - not_null:
               config:
@@ -314,10 +314,12 @@ models:
         description: The payment's creation date in Asia/Riyadh. Partition column.
         tests: [not_null]
       - name: merchant_id
-        description: The merchant (business_entities.business_id).
+        description: The merchant (merchants.merchant_id).
         tests: [not_null]
       - name: merchant_name
-        description: Merchant display name from the payments table; NULL when the snapshot lagged.
+        description: >
+          Merchant name from the merchants table, added after aggregation.
+          Not part of the grain; NULL when the merchant has no name yet.
         tests:
           - not_null:
               config:

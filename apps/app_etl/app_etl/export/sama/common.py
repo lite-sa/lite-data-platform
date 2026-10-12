@@ -19,6 +19,7 @@ from app_etl.export.common import EXCLUDED_PAYMENT_IDS, LOCAL_TIMEZONE, latest_v
 
 PROJECT = "lite-data-prod"
 RAW = f"{PROJECT}.raw_litecore"
+CORE = f"{PROJECT}.core"
 
 # The dbt seed test_merchants.csv is canonical; a parity test keeps this
 # copy equal to it.

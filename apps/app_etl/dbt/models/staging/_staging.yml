@@ -46,13 +46,3 @@ models:
     columns:
       - name: threeds_id
         tests: [not_null, unique]
-
-  - name: stg_litecore__business_entities
-    description: >
-      Latest version per merchant, keyed by business_id (what
-      payments.merchant_id references). Two-column allowlist — the
-      display name only; the rest of the registry profile stays behind
-      raw IAM.
-    columns:
-      - name: merchant_id
-        tests: [not_null, unique]
