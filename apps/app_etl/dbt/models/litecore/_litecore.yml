@@ -520,13 +520,13 @@ models:
       - name: merchant_id
         description: The merchant paid out (payments.merchant_id).
       - name: cycle_id
-        description: The settlement cycle (frequency and cutoff) the window follows.
+        description: The settlement cycle (settlement__cycle.id) the window follows.
       - name: window_schedule_id
         description: >
-          The merchant window schedule (one per acceptance account, main
-          or tips) the window belongs to. Added at source 2026-09-17, NULL
-          on windows last updated before then. The schedule table is not
-          ingested.
+          The merchant window schedule (settlement__merchant_window_schedule.id,
+          one per acceptance account, main or tips) the window belongs to.
+          Added at source 2026-09-17, NULL on windows last updated before
+          then.
       - name: value_date
         description: >
           When the payout becomes executable, UTC. Collection day plus
@@ -580,8 +580,9 @@ models:
         tests: [not_null]
       - name: account_cycle_id
         description: >
-          The account-cycle split rule that produced the instruction. A
-          window can pay several destinations by percentage.
+          The account-cycle rule that produced the instruction
+          (settlement__account_cycle.id). A window can pay several
+          destinations by percentage.
       - name: destination_account_id
         description: The settlement account paid (settlement__account.id).
       - name: amount
@@ -642,6 +643,109 @@ models:
         description: When the leg was removed from settlement, UTC.
       - name: created_at
         description: Leg creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  # settlement cycle tables, added 2026-10-12.
+  - name: settlement__cycle
+    description: >
+      Copy of LiteCore settlement.cycle, the settlement cycle templates,
+      one row per id. No column removed. A cycle sets how many days after
+      the collection day a window pays out (T+N) and its daily cutoff.
+      settlement__account_cycle assigns cycles to settlement accounts, and
+      settlement__settlement_window.cycle_id names the cycle a window
+      follows. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The cycle id (uuid).
+        tests: [not_null, unique]
+      - name: frequency
+        description: >
+          N in T+N: days from the collection day to the value date, before
+          the KSA weekend roll. 0 to 10 so far.
+      - name: cutoff_time
+        description: Daily cutoff, a time of day (HH:MM:SS) in cutoff_timezone.
+      - name: cutoff_timezone
+        description: Time zone of cutoff_time. Asia/Riyadh on every row so far.
+      - name: status
+        description: ACTIVE on every row so far.
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: created_by
+        description: The service or tool that created the cycle, system-seed or Retool-App.
+      - name: updated_by
+        description: The service or tool behind the last update. NULL until one happens.
+      - name: created_at
+        description: Cycle creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: settlement__account_cycle
+    description: >
+      Copy of LiteCore settlement.account_cycle, the rules that pay a
+      settlement account on a cycle, one row per id. No column removed.
+      Replacing a merchant's cycle soft-deletes the old rule and inserts a
+      new one, so filter on is_deleted = false for the live rules.
+      settlement__instruction.account_cycle_id names the rule behind each
+      payout. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The rule id (uuid).
+        tests: [not_null, unique]
+      - name: account_id
+        description: The settlement account paid (settlement__account.id).
+      - name: cycle_id
+        description: The cycle followed (settlement__cycle.id).
+      - name: window_schedule_id
+        description: >
+          The merchant window schedule (settlement__merchant_window_schedule.id)
+          whose windows the rule pays. main and tips each have their own.
+      - name: percentage
+        description: Share of the window paid to the account, in percent. 100 on every row so far.
+      - name: is_deleted
+        description: Soft-delete flag. True on rules a later replacement retired.
+      - name: created_by
+        description: >
+          The service or tool that created the rule: system-default-config
+          (the onboarding default) or Retool-App.
+      - name: updated_by
+        description: The service or tool behind the last update. NULL on every row so far.
+      - name: created_at
+        description: Rule creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: settlement__merchant_window_schedule
+    description: >
+      Copy of LiteCore settlement.merchant_window_schedule, one row per
+      merchant and acceptance account (main or tips), with the time of
+      day the merchant's settlement windows start. No column removed.
+      settlement__settlement_window.window_schedule_id and
+      settlement__account_cycle.window_schedule_id reference it. Rows the
+      source deleted are absent: 24 windows of 2 merchants (collection
+      days 2026-09-17 to 09-28) point to schedules not in this table.
+      Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The schedule id (uuid).
+        tests: [not_null, unique]
+      - name: merchant_id
+        description: The merchant (payments.merchant_id).
+      - name: acceptance_account_reference
+        description: The ledger acceptance pool the schedule covers, main or tips.
+      - name: start_times
+        description: >
+          JSON array string of window start times, HH:MM in Riyadh local
+          time, for example ["03:00"]. One entry today; a merchant's main
+          and tips rows carry the same times.
+      - name: created_by
+        description: The service or tool that created the row, system or system-migration.
+      - name: updated_by
+        description: >
+          The service or tool behind the last update: system, Retool-App (a
+          back-office change) or system-0018 (a source migration).
+      - name: created_at
+        description: Row creation, UTC.
       - name: updated_at
         description: Last update at source, UTC.
 
@@ -1075,6 +1179,43 @@ models:
         description: Channel creation, UTC.
       - name: updated_at
         description: Last update at source, UTC.
+
+  - name: business_management__business_representatives
+    description: >
+      Redacted copy of LiteCore business_management.business_representatives,
+      the person who represents a merchant, one row per id and one per
+      merchant so far. The national id and birth date pass masked.
+      Removed columns: national_id, date_of_birth (masked instead),
+      phone_number, name and the five yakeen_* name columns. Current state
+      only. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The representative id (uuid).
+        tests: [not_null, unique]
+      - name: business_id
+        description: >
+          The merchant (business_management__business_entities.id, the
+          source key, not business_id).
+      - name: user_id
+        description: The representative's user (user__users.user_id).
+      - name: phone_number_verified
+        description: The phone number passed OTP verification. True on every row so far.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+      - name: national_id_masked
+        description: >
+          National ID or Iqama number, masked: the first two and last two
+          digits kept, a star for each digit between.
+      - name: date_of_birth_masked
+        description: >
+          Hijri birth date (YYYY-MM-DD), masked: the first two characters
+          and the last one kept, a star for each character between.
+      - name: has_national_id
+        description: A national ID or Iqama number is on file.
+      - name: has_yakeen_name
+        description: The verified name came back from Yakeen, the government ID registry.
 
   - name: pricing_engine__rule_evaluation
     description: >
@@ -1633,6 +1774,76 @@ models:
         description: NULL on every row so far.
       - name: status
         description: INACTIVE on every row so far, including accounts taking payments.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: lem__agreements
+    description: >
+      Redacted copy of LiteCore lem.agreements, the agreements between two
+      lem business accounts (a source account offers terms, the target
+      accepts them), one row per id. Removed columns: phone_number and
+      member_name, the contact invited when the target account does not
+      exist yet. Current state only. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The agreement id (uuid).
+        tests: [not_null, unique]
+      - name: source_business_account_id
+        description: The account that offered the agreement (lem__business_accounts.id).
+      - name: target_business_account_id
+        description: >
+          The account that accepts it (lem__business_accounts.id). NULL
+          while the invited party has no account yet.
+      - name: agreement_type
+        description: commercial, payment_processing or operational. NULL on every row so far.
+      - name: agreement_rules
+        description: >
+          JSON string of the agreed terms: schema_version, commission and
+          settlement. NULL on every row so far.
+      - name: status
+        description: awaiting_approval, active, rejected or terminated.
+      - name: created_at
+        description: Creation, UTC.
+      - name: updated_at
+        description: Last update at source, UTC.
+
+  - name: lem__activities
+    description: >
+      Copy of LiteCore lem.activities, the business activities recorded for
+      a lem merchant, one row per id. No column removed. Each row is one
+      activity with its MCC, attached to a corporate record (the activities
+      listed on the commercial registration during KYB) or to a legal
+      entity (MCCs chosen at manual onboarding), by reference_type. Current
+      state only. Rebuilt five times a day.
+    columns:
+      - name: id
+        description: The activity row id (uuid).
+        tests: [not_null, unique]
+      - name: reference_id
+        description: >
+          The owner: a corporate record id (not loaded) when reference_type
+          is CORPORATE_RECORD, lem__legal_entities.id when it is
+          LEGAL_ENTITY.
+      - name: reference_type
+        description: CORPORATE_RECORD or LEGAL_ENTITY. CORPORATE_RECORD on every row so far.
+      - name: name
+        description: Activity name as registered, for example Systems Integration.
+      - name: activity_id
+        description: The registered activity code, six digits, for example 620101.
+      - name: mcc
+        description: Merchant category code mapped to the activity.
+      - name: mcc_title
+        description: The MCC's title.
+      - name: is_selected
+        description: >
+          The activity was chosen as the merchant's own. True on manual
+          onboarding rows, NULL on corporate-record rows.
+      - name: is_deleted
+        description: Soft-delete flag.
+      - name: deleted_at
+        description: Soft deletion, UTC.
       - name: created_at
         description: Creation, UTC.
       - name: updated_at

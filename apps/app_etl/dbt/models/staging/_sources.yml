@@ -48,6 +48,12 @@ sources:
           checkout / payment link), `replace` disposition. id is what
           payments.channel_id and checkout_sessions.channel_id reference;
           business_id -> business_entities.id (the source PK).
+      - name: business_management__business_representatives
+        description: >
+          The person who represents a merchant; business_id ->
+          business_entities.id (the source PK), user_id ->
+          user__users.user_id. Every column apart from ids, timestamps and
+          phone_number_verified is the trim map.
       # Declared 2026-09-09 for the litecore mirror (models/litecore/); no
       # staging view reads them.
       - name: payment_v2__payment_link
@@ -88,6 +94,19 @@ sources:
           Settlement legs; parent_payment_id -> payments.id,
           external_reference_id -> payment_operations.id. fees is jsonb[]
           landed as a JSON-array string. No PII.
+      # Declared 2026-10-12 for the litecore mirror; no staging view reads them.
+      - name: settlement__cycle
+        description: Settlement cycle templates (T+N frequency and daily cutoff). No PII.
+      - name: settlement__account_cycle
+        description: >
+          Which cycle and window schedule pays which settlement account;
+          account_id -> settlement__account.id. Soft-deleted when replaced.
+          No PII.
+      - name: settlement__merchant_window_schedule
+        description: >
+          One row per merchant and acceptance account (main, tips) with the
+          window start times. start_times is text[] landed as a JSON-array
+          string. No PII.
       # Declared 2026-09-15 for the payout mirror tables (models/litecore/);
       # no staging view reads them.
       - name: payout__transfer
@@ -207,6 +226,14 @@ sources:
         description: >
           The lem merchant key: payments.merchant_id of a lem-onboarded
           merchant and the business_account_id in payment splits.
+      - name: lem__agreements
+        description: >
+          Agreements between two lem business accounts; phone_number and
+          member_name (the invited contact) are the trim map.
+      - name: lem__activities
+        description: >
+          Business activities (activity code and MCC) of a corporate record or
+          legal entity, by reference_type.
       - name: lem__channels
         description: >
           Sales channels of a lem business account. Absent from raw until
