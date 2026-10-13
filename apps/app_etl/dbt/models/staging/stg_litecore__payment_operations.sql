@@ -1,8 +1,9 @@
 -- Rename/select only, plus the local wall-clock timestamp.
 --
--- POS receipt facts live inside the metadata JSONB and are extracted as
--- scalars; the blob itself never leaves staging. receipt_outcome reads one
--- level deeper: raw_provider_response is a JSON string inside the JSON.
+-- POS receipt facts and the ecom failure_outcome live inside the metadata
+-- JSONB and are extracted as scalars; the blob itself never leaves staging.
+-- receipt_outcome reads one level deeper: raw_provider_response is a JSON
+-- string inside the JSON.
 with
     latest as (
 
@@ -45,6 +46,7 @@ select
     json_value(metadata, '$.verification_method') as verification_method,
     json_value(metadata, '$.reconciliation_status') as reconciliation_status,
     json_query(metadata, '$.frontend_error') is not null as frontend_error,
+    json_value(metadata, '$.failure_outcome') as failure_outcome,
     json_value(
         json_value(metadata, '$.raw_provider_response'), '$.normalizedReceipt.outcome'
     ) as receipt_outcome

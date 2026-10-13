@@ -268,7 +268,8 @@ with
             connector_response_message as failure_response_message,
             http_status_code as failure_http_status,
             processing_duration_ms as failure_duration_ms,
-            receipt_outcome as failure_outcome,
+            coalesce(failure_outcome, receipt_outcome) as failure_outcome,
+            receipt_outcome as failure_receipt_outcome,
             frontend_error as failure_frontend_error,
             initiated_by as failure_initiated_by
         from decision_ops
@@ -388,6 +389,7 @@ with
             last_failure.failure_http_status,
             last_failure.failure_duration_ms,
             last_failure.failure_outcome,
+            last_failure.failure_receipt_outcome,
             coalesce(last_failure.failure_frontend_error, false) as failure_frontend_error,
             last_failure.failure_initiated_by,
             coalesce(decision_counts.n_decision_failures, 0) as n_decision_failures,
@@ -474,7 +476,7 @@ with
                         then 'pos_validation'
                         when failure_frontend_error
                         then 'pos_device_error'
-                        when failure_outcome = 'CANCELLED'
+                        when failure_receipt_outcome = 'CANCELLED'
                         then 'pos_cancelled'
                         when failure_response_code is not null
                         then 'pos_provider_declined'

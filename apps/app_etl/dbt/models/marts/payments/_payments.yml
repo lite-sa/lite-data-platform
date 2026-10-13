@@ -243,7 +243,18 @@ models:
       - name: failure_http_status
         description: HTTP status the connector returned on the last decision failure.
       - name: failure_outcome
-        description: POS receipt outcome of the last decision failure, for example CANCELLED.
+        description: >
+          Outcome LiteCore stamped on the last decision failure. Ecom:
+          DECLINED (the issuer or gateway said no), FAILED (technical or
+          pre-gateway failure), or REJECTED_VALIDATION / REJECTED_FRAUD /
+          REJECTED_RISK; written since 2026-09-13, NULL on older ecom
+          payments. POS: the terminal receipt outcome, for example FAILURE
+          or CANCELLED.
+        tests:
+          - accepted_values:
+              values: [DECLINED, FAILED, REJECTED_VALIDATION, REJECTED_FRAUD, REJECTED_RISK, FAILURE, CANCELLED, REVERSED, UNKNOWN]
+              config:
+                severity: warn
       - name: failure_initiated_by
         description: Who initiated the failing operation, as at source.
       - name: has_risk_result

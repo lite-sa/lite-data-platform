@@ -18,9 +18,9 @@ models:
       Latest version per payment operation, plus local wall-clock
       timestamps for time-of-day rules. The POS receipt scalars
       (external_operation_type, verification_method,
-      reconciliation_status, frontend_error, receipt_outcome) are
-      extracted from the metadata JSONB here; the blob — raw provider
-      payloads — never leaves this view.
+      reconciliation_status, frontend_error, receipt_outcome) and the
+      ecom failure_outcome are extracted from the metadata JSONB here;
+      the blob — raw provider payloads — never leaves this view.
     columns:
       - name: payment_operation_id
         tests: [not_null, unique]
