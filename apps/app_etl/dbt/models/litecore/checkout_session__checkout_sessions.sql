@@ -2,14 +2,19 @@
 -- the latest version of every row, PII columns removed. The column list is
 -- an allowlist: a new source column reaches this table only when added here.
 --
--- Left out: customer: shopper contact JSONB; metadata, order_data: merchant JSONB;
+-- Left out: customer: shopper contact JSONB. One key passes as its own column:
+-- customer_id, the merchant's own reference for the shopper, which links one
+-- shopper's sessions; no prod value looks like an email or a phone number
+-- (probe 2026-10-14). metadata, order_data: merchant JSONB;
 -- payment_url: a live capability URL until expires_on; redirect_urls: 90% carry
 -- a query-string token; idempotency_key: free text, 2 prod values look like an
 -- email or a phone (trim map). splits: unreviewed, NULL on every prod row.
+{% set sessions = source('litecore', 'checkout_session__checkout_sessions') -%}
+{%- set session_columns = adapter.get_columns_in_relation(sessions) | map(attribute="name") | map("lower") | list -%}
 select
     {{
         keep_columns(
-            source('litecore', 'checkout_session__checkout_sessions'),
+            sessions,
             [
                 'id',
                 'merchant_id',
@@ -26,8 +31,13 @@ select
                 'updated_at',
             ]
         )
-    }}
-from {{ source('litecore', 'checkout_session__checkout_sessions') }}
+    }},
+    {% if "customer" in session_columns -%}
+        nullif(trim(json_value(customer, '$.id')), '')
+    {%- else -%}
+        cast(null as string)
+    {%- endif %} as customer_id
+from {{ sessions }}
 qualify
     row_number() over (
         partition by id order by updated_at desc, _dlt_load_id desc
