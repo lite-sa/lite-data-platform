@@ -1,0 +1,72 @@
+# Every description here lands on the BigQuery table or column
+# (persist_docs) and Metabase shows it: short, plain, under 1,024
+# characters (tests/test_dbt_docs.py).
+version: 2
+
+models:
+  - name: risk_decisions
+    description: >
+      One row per payment and rule mode: the risk decision the live rules
+      made (mode live) and the one the shadow-mode rules would have made
+      (mode shadow). Shadow rules run on every payment but never change its
+      outcome. Filter on mode before counting payments. Rebuilt in full on
+      every run from the risk_management raw tables. Test merchants and
+      incident-excluded payments are removed. No PII. amount is in major
+      units of currency.
+    columns:
+      - name: payment_id
+        description: The LiteCore payment id (payments.payment_id). Grain with mode.
+        tests: [not_null]
+      - name: mode
+        description: >
+          live (rules that decide the payment) or shadow (rules marked as
+          test, evaluated but never applied). Grain with payment_id.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [live, shadow]
+      - name: merchant_id
+        description: The merchant (merchants.merchant_id).
+        tests: [not_null]
+      - name: merchant_name
+        description: Current merchant name from the merchants table. NULL when the merchant has no name yet.
+      - name: channel
+        description: pos, ecom or unknown, from payments.
+      - name: entry_mode
+        description: How the card reached LiteCore, from payments.
+      - name: card_brand
+        description: MADA, VISA, MASTERCARD or UNKNOWN, from payments.
+      - name: instrument_type
+        description: CARD or APPLE_PAY, from payments.
+      - name: first_evaluated_at
+        description: >
+          First rule evaluation of the payment in this mode, UTC. Partition
+          column: filter on it for partition pruning.
+        tests: [not_null]
+      - name: first_evaluated_at_local
+        description: first_evaluated_at in Asia/Riyadh (DATETIME). Bucket it by hour for the hourly view.
+      - name: decision
+        description: >
+          accept, review or reject: the strictest outcome across the
+          payment's evaluations in this mode (PRE_AUTH and POST_3DS). On a
+          shadow row, reject means the payment would have been blocked had
+          the rules been live.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [accept, review, reject]
+              config:
+                severity: warn
+      - name: matched_rules
+        description: >
+          Names of the rules that matched in this mode, comma-separated and
+          sorted. NULL when none matched.
+      - name: outcome
+        description: >
+          The payment's real outcome (authorized, declined or no_decision).
+          A shadow reject on an authorized payment is revenue the rules
+          would have stopped.
+      - name: amount
+        description: Requested amount in major units of currency.
+      - name: currency
+        description: ISO 4217 code of amount.
